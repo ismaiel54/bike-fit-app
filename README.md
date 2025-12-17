@@ -1,8 +1,8 @@
-# 🚴 Bike Fit Analyzer
+# Bike Fit Analyzer
 
 An AI-powered bike fit tool that analyzes cycling posture from video using computer vision and pose estimation. Get personalized bike fit recommendations based on your riding position, bike type, and fitness goals.
 
-## ✨ Features
+## Features
 
 - **Video Analysis**: Upload cycling videos (MP4, MOV) to analyze your riding posture
 - **Pose Detection**: Uses MediaPipe to detect and track key body landmarks
@@ -25,19 +25,19 @@ An AI-powered bike fit tool that analyzes cycling posture from video using compu
 - **Visual Output**: Generates annotated videos and images with angle overlays
 - **Stroke Analysis**: Analyzes pedal stroke positions (top, mid, bottom)
 
-## 🛠️ Technology Stack
+## Technology Stack
 
 - **Backend**: FastAPI (Python)
 - **Computer Vision**: MediaPipe, OpenCV
 - **Frontend**: HTML5, CSS3, JavaScript
 - **Dependencies**: NumPy, Jinja2
 
-## 📋 Prerequisites
+## Prerequisites
 
 - Python 3.8+
 - pip (Python package manager)
 
-## 🚀 Installation
+## Installation
 
 1. **Clone the repository**
    ```bash
@@ -55,7 +55,7 @@ An AI-powered bike fit tool that analyzes cycling posture from video using compu
    pip install -r requirements.txt
    ```
 
-## 💻 Usage
+## Usage
 
 1. **Start the server**
    ```bash
@@ -78,20 +78,20 @@ An AI-powered bike fit tool that analyzes cycling posture from video using compu
    - Review personalized recommendations
    - See prioritized adjustment suggestions
 
-## 📹 Video Requirements
+## Video Requirements
 
 - **Format**: MP4 or MOV
 - **Orientation**: Landscape preferred (portrait videos are auto-rotated)
 - **Content**: Rider should be visible from the left side
 - **Quality**: Clear view of the rider's full body
 
-## 📊 Understanding the Results
+## Understanding the Results
 
 ### Fit Windows
 Each angle is compared against target ranges for your bike type and goal:
-- **In Range**: ✅ Optimal position
-- **Slightly Off**: ⚠️ Minor adjustments recommended
-- **Off**: ❌ Significant adjustment needed
+- **In Range**: Optimal position
+- **Slightly Off**: Minor adjustments recommended
+- **Off**: Significant adjustment needed
 
 ### Recommended Actions
 Prioritized list of adjustments to try:
@@ -105,7 +105,7 @@ Estimated angles at different pedal stroke positions:
 - **Mid Stroke**: Transition position
 - **Top of Stroke**: Leg flexed (min knee angle)
 
-## ⚙️ Configuration
+## Configuration
 
 ### Bike Types
 Each bike type has optimized angle ranges:
@@ -119,7 +119,7 @@ Each bike type has optimized angle ranges:
 - **Balanced**: Standard ranges for general riding
 - **Aero-Performance**: Narrower ranges, optimized for aerodynamics
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 bike-fit-app/
@@ -135,7 +135,7 @@ bike-fit-app/
 └── LICENSE
 ```
 
-## 🔧 API Endpoints
+## API Endpoints
 
 ### `GET /`
 Serves the main bike-fit UI.
@@ -157,21 +157,13 @@ Analyzes uploaded video and returns bike fit recommendations.
 - Recommendations
 - Annotated video/image URLs
 
-## ⚠️ Disclaimer
+## Disclaimer
 
 This tool provides video-based estimates for bike fit analysis. It's designed for iterative adjustments and general guidance. For pain, injury, or professional bike fitting, please consult a certified bike fitter or healthcare professional.
 
-## 📝 License
+## License
 
 See [LICENSE](LICENSE) file for details.
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## 📧 Support
-
-For issues, questions, or suggestions, please open an issue on the repository.
 
 ---
 
