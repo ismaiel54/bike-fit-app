@@ -161,10 +161,4 @@ Analyzes uploaded video and returns bike fit recommendations.
 
 This tool provides video-based estimates for bike fit analysis. It's designed for iterative adjustments and general guidance. For pain, injury, or professional bike fitting, please consult a certified bike fitter or healthcare professional.
 
-## License
-
-See [LICENSE](LICENSE) file for details.
-
----
-
 **Note**: This tool analyzes posture from video and provides recommendations based on biomechanical principles. Individual results may vary based on flexibility, injury history, and personal preferences.
