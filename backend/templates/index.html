@@ -1,0 +1,818 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bike Fit Analyzer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 40px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            font-weight: 700;
+        }
+
+        .header p {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+
+        .content {
+            padding: 40px;
+        }
+
+        .upload-section {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 30px;
+            border: 2px dashed #667eea;
+            text-align: center;
+            transition: all 0.3s ease;
+        }
+
+        .upload-section:hover {
+            border-color: #764ba2;
+            background: #f0f2ff;
+        }
+
+        .file-input-wrapper {
+            position: relative;
+            display: inline-block;
+            margin: 20px 0;
+        }
+
+        .file-input-wrapper input[type="file"] {
+            position: absolute;
+            opacity: 0;
+            width: 100%;
+            height: 100%;
+            cursor: pointer;
+        }
+
+        .file-input-label {
+            display: inline-block;
+            padding: 15px 30px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1.1em;
+            font-weight: 600;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .file-input-label:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .file-name {
+            margin-top: 15px;
+            color: #666;
+            font-size: 0.95em;
+        }
+
+        .analyze-btn {
+            padding: 15px 40px;
+            background: #28a745;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 1.1em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-top: 20px;
+        }
+
+        .analyze-btn:hover:not(:disabled) {
+            background: #218838;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(40, 167, 69, 0.4);
+        }
+
+        .analyze-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 30px;
+            color: #667eea;
+        }
+
+        .loading.active {
+            display: block;
+        }
+
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .results {
+            display: none;
+            margin-top: 30px;
+        }
+
+        .results.active {
+            display: block;
+        }
+
+        .video-section {
+            margin-bottom: 30px;
+        }
+
+        .video-container {
+            background: #000;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            margin-bottom: 20px;
+        }
+
+        .video-container video {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+
+        .report-section {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 30px;
+        }
+
+        .report-section h2 {
+            color: #667eea;
+            margin-bottom: 20px;
+            font-size: 1.8em;
+        }
+
+        .angles-display {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .angle-card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            text-align: center;
+        }
+
+        .angle-card h3 {
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 1.1em;
+        }
+
+        .angle-value {
+            font-size: 2.5em;
+            font-weight: 700;
+            color: #333;
+            margin: 10px 0;
+        }
+
+        .angle-unit {
+            font-size: 0.8em;
+            color: #666;
+        }
+
+        .recommendations {
+            margin-top: 30px;
+        }
+
+        .recommendations h3 {
+            color: #667eea;
+            margin-bottom: 15px;
+            font-size: 1.3em;
+        }
+
+        .recommendation-item {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            border-left: 4px solid #667eea;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+        }
+
+        .recommendation-item h4 {
+            color: #333;
+            margin-bottom: 8px;
+            font-size: 1.1em;
+        }
+
+        .recommendation-item p {
+            color: #666;
+            line-height: 1.6;
+        }
+
+        .report-text {
+            background: white;
+            padding: 25px;
+            border-radius: 8px;
+            line-height: 1.8;
+            color: #333;
+            font-size: 1.05em;
+            margin-top: 20px;
+        }
+
+        .error {
+            display: none;
+            background: #f8d7da;
+            color: #721c24;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 20px;
+            border-left: 4px solid #dc3545;
+        }
+
+        .error.active {
+            display: block;
+        }
+
+        @media (max-width: 768px) {
+            .header h1 {
+                font-size: 2em;
+            }
+
+            .content {
+                padding: 20px;
+            }
+
+            .angles-display {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚴 Bike Fit Analyzer</h1>
+            <p>Upload a video to analyze your cycling posture and get personalized recommendations</p>
+        </div>
+
+        <div class="content">
+            <!-- Rider Profile Section -->
+            <div class="profile-section" style="background: #f8f9fa; border-radius: 12px; padding: 30px; margin-bottom: 30px;">
+                <h2 style="color: #667eea; margin-bottom: 20px;">Rider Profile & Fit Goals</h2>
+                
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-bottom: 20px;">
+                    <div>
+                        <label for="bikeType" style="display: block; margin-bottom: 8px; color: #333; font-weight: 600;">Bike Type:</label>
+                        <select id="bikeType" style="padding: 10px 15px; border-radius: 8px; border: 2px solid #667eea; font-size: 1em; width: 100%; background: white; color: #333; cursor: pointer;">
+                            <option value="Road" selected>Road</option>
+                            <option value="Gravel-CX">Gravel-CX</option>
+                            <option value="MTB">MTB</option>
+                            <option value="Triathlon">Triathlon</option>
+                            <option value="Time Trial">Time Trial</option>
+                            <option value="Spin-Exercise">Spin-Exercise</option>
+                        </select>
+                    </div>
+                    
+                    <div>
+                        <label for="goal" style="display: block; margin-bottom: 8px; color: #333; font-weight: 600;">Riding Goal:</label>
+                        <select id="goal" style="padding: 10px 15px; border-radius: 8px; border: 2px solid #667eea; font-size: 1em; width: 100%; background: white; color: #333; cursor: pointer;">
+                            <option value="Comfort">Comfort</option>
+                            <option value="Balanced" selected>Balanced</option>
+                            <option value="Aero-Performance">Aero-Performance</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div style="margin-bottom: 20px;">
+                    <label for="notes" style="display: block; margin-bottom: 8px; color: #333; font-weight: 600;">Notes / Pain Points (optional):</label>
+                    <textarea id="notes" rows="3" style="width: 100%; padding: 10px; border-radius: 8px; border: 2px solid #667eea; font-size: 1em; font-family: inherit; resize: vertical;" placeholder="Any specific pain points, injuries, or fit concerns..."></textarea>
+                </div>
+
+                <!-- Mobility Assessment -->
+                <div style="margin-top: 30px; padding-top: 20px; border-top: 2px solid #ddd;">
+                    <h3 style="color: #667eea; margin-bottom: 15px;">Mobility Assessment (v1 - Self-Reported)</h3>
+                    <p style="color: #666; font-size: 0.9em; margin-bottom: 15px;">Rate your flexibility/mobility on a scale of 0-10 (0 = very limited, 10 = very flexible)</p>
+                    
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px;">
+                        <div>
+                            <label for="mobilityHamstring" style="display: block; margin-bottom: 8px; color: #333; font-weight: 600;">Hamstring Flexibility:</label>
+                            <input type="range" id="mobilityHamstring" min="0" max="10" value="7" style="width: 100%;">
+                            <div style="display: flex; justify-content: space-between; font-size: 0.85em; color: #666;">
+                                <span>0</span>
+                                <span id="mobilityHamstringValue">7</span>
+                                <span>10</span>
+                            </div>
+                        </div>
+                        
+                        <div>
+                            <label for="mobilityHip" style="display: block; margin-bottom: 8px; color: #333; font-weight: 600;">Hip Flexion Tolerance:</label>
+                            <input type="range" id="mobilityHip" min="0" max="10" value="7" style="width: 100%;">
+                            <div style="display: flex; justify-content: space-between; font-size: 0.85em; color: #666;">
+                                <span>0</span>
+                                <span id="mobilityHipValue">7</span>
+                                <span>10</span>
+                            </div>
+                        </div>
+                        
+                        <div>
+                            <label for="mobilityAnkle" style="display: block; margin-bottom: 8px; color: #333; font-weight: 600;">Ankle Mobility:</label>
+                            <input type="range" id="mobilityAnkle" min="0" max="10" value="7" style="width: 100%;">
+                            <div style="display: flex; justify-content: space-between; font-size: 0.85em; color: #666;">
+                                <span>0</span>
+                                <span id="mobilityAnkleValue">7</span>
+                                <span>10</span>
+                            </div>
+                        </div>
+                        
+                        <div>
+                            <label for="mobilityShoulder" style="display: block; margin-bottom: 8px; color: #333; font-weight: 600;">Shoulder/Thoracic Mobility:</label>
+                            <input type="range" id="mobilityShoulder" min="0" max="10" value="7" style="width: 100%;">
+                            <div style="display: flex; justify-content: space-between; font-size: 0.85em; color: #666;">
+                                <span>0</span>
+                                <span id="mobilityShoulderValue">7</span>
+                                <span>10</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="upload-section">
+                <h2>Upload Your Video</h2>
+                <p style="margin: 15px 0; color: #666;">Supported formats: MP4, MOV</p>
+
+                <div class="file-input-wrapper">
+                    <input type="file" id="videoFile" accept="video/mp4,video/quicktime" />
+                    <label for="videoFile" class="file-input-label">Choose Video File</label>
+                </div>
+                <div class="file-name" id="fileName"></div>
+                <button class="analyze-btn" id="analyzeBtn" disabled>Analyze Video</button>
+            </div>
+
+            <div class="loading" id="loading">
+                <div class="spinner"></div>
+                <p>Analyzing your video... This may take a moment.</p>
+            </div>
+
+            <div class="error" id="error"></div>
+
+            <div class="results" id="results">
+                <div class="video-section">
+                    <h2 style="color: #667eea; margin-bottom: 15px;">Annotated Video</h2>
+                    <div class="video-container">
+                        <video id="annotatedVideo" controls loop autoplay muted>
+                            Your browser does not support the video tag.
+                        </video>
+                    </div>
+                </div>
+
+                <div class="report-section">
+                    <h2>Analysis Report</h2>
+                    <p id="bikeTypeDisplay" style="color: #667eea; font-weight: 600; margin-bottom: 20px; font-size: 1.1em;"></p>
+                    
+                    <!-- Disclaimer -->
+                    <div style="background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin-bottom: 20px; border-radius: 4px;">
+                        <p style="margin: 0; color: #856404; font-size: 0.9em;">
+                            <strong>Note:</strong> Video-based estimates; best used for iterative adjustments. For pain/injury consult a professional fitter/clinician.
+                        </p>
+                    </div>
+
+                    <!-- Fit Windows Section -->
+                    <div style="margin-bottom: 30px;">
+                        <h3 style="color: #667eea; margin-bottom: 15px; font-size: 1.3em;">Fit Window</h3>
+                        <div id="fitWindows" style="display: grid; gap: 15px;">
+                            <!-- Fit windows will be populated here -->
+                        </div>
+                    </div>
+
+                    <!-- Stroke Samples Section -->
+                    <div style="margin-bottom: 30px;">
+                        <h3 style="color: #667eea; margin-bottom: 15px; font-size: 1.3em;">Pedal Stroke Positions (Estimated)</h3>
+                        <p style="color: #666; font-size: 0.9em; margin-bottom: 15px; font-style: italic;">
+                            Estimated from video frames. Not based on crank angle detection.
+                        </p>
+                        <div id="strokeSamples" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+                            <!-- Stroke samples will be populated here -->
+                        </div>
+                    </div>
+
+                    <!-- Recommended Actions -->
+                    <div style="margin-bottom: 30px;">
+                        <h3 style="color: #667eea; margin-bottom: 15px; font-size: 1.3em;">Try These First (Priority Order)</h3>
+                        <div id="recommendedActions" style="display: grid; gap: 15px;">
+                            <!-- Recommended actions will be populated here -->
+                        </div>
+                    </div>
+
+                    <!-- Movement Tracking Placeholder -->
+                    <div style="margin-bottom: 30px; padding: 20px; background: #e9ecef; border-radius: 8px;">
+                        <h3 style="color: #667eea; margin-bottom: 10px; font-size: 1.2em;">Movement Tracking</h3>
+                        <p style="color: #666; margin: 0;">Coming next: joint tracking (knee/hip lateral movement)</p>
+                    </div>
+                    
+                    <div class="angles-display">
+                        <div class="angle-card">
+                            <h3>Knee Angle</h3>
+                            <div class="angle-value" id="kneeAngle">-</div>
+                            <div class="angle-unit">degrees</div>
+                        </div>
+                        <div class="angle-card">
+                            <h3>Hip Angle</h3>
+                            <div class="angle-value" id="hipAngle">-</div>
+                            <div class="angle-unit">degrees</div>
+                        </div>
+                        <div class="angle-card">
+                            <h3>Foot Angle</h3>
+                            <div class="angle-value" id="footAngle">-</div>
+                            <div class="angle-unit">degrees</div>
+                        </div>
+                        <div class="angle-card">
+                            <h3>Torso Angle</h3>
+                            <div class="angle-value" id="torsoAngle">-</div>
+                            <div class="angle-unit">degrees</div>
+                        </div>
+                        <div class="angle-card">
+                            <h3>Elbow Angle</h3>
+                            <div class="angle-value" id="elbowAngle">-</div>
+                            <div class="angle-unit">degrees</div>
+                        </div>
+                    </div>
+
+                    <div class="recommendations">
+                        <h3>Recommendations</h3>
+                        <div class="recommendation-item">
+                            <h4>Knee Position</h4>
+                            <p id="kneeComment">-</p>
+                        </div>
+                        <div class="recommendation-item">
+                            <h4>Hip Position</h4>
+                            <p id="hipComment">-</p>
+                        </div>
+                        <div class="recommendation-item">
+                            <h4>Foot Angle</h4>
+                            <p id="footComment">-</p>
+                        </div>
+                        <div class="recommendation-item">
+                            <h4>Torso Angle</h4>
+                            <p id="torsoComment">-</p>
+                        </div>
+                        <div class="recommendation-item">
+                            <h4>Elbow Angle</h4>
+                            <p id="elbowComment">-</p>
+                        </div>
+                        <div class="recommendation-item">
+                            <h4>Summary</h4>
+                            <p id="overallComment">-</p>
+                        </div>
+                    </div>
+
+                    <div class="report-text" id="reportText"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const videoFileInput = document.getElementById('videoFile');
+        const fileNameDisplay = document.getElementById('fileName');
+        const analyzeBtn = document.getElementById('analyzeBtn');
+        const loading = document.getElementById('loading');
+        const results = document.getElementById('results');
+        const error = document.getElementById('error');
+        const annotatedVideo = document.getElementById('annotatedVideo');
+
+        // Load saved profile from localStorage
+        function loadProfile() {
+            const saved = localStorage.getItem('bikeFitProfile');
+            if (saved) {
+                try {
+                    const profile = JSON.parse(saved);
+                    if (profile.bikeType) document.getElementById('bikeType').value = profile.bikeType;
+                    if (profile.goal) document.getElementById('goal').value = profile.goal;
+                    if (profile.notes) document.getElementById('notes').value = profile.notes;
+                    if (profile.mobility) {
+                        Object.keys(profile.mobility).forEach(key => {
+                            const slider = document.getElementById('mobility' + key);
+                            const valueDisplay = document.getElementById('mobility' + key + 'Value');
+                            if (slider && valueDisplay) {
+                                slider.value = profile.mobility[key];
+                                valueDisplay.textContent = profile.mobility[key];
+                            }
+                        });
+                    }
+                } catch (e) {
+                    console.error('Failed to load profile:', e);
+                }
+            }
+        }
+
+        // Save profile to localStorage
+        function saveProfile() {
+            const profile = {
+                bikeType: document.getElementById('bikeType').value,
+                goal: document.getElementById('goal').value,
+                notes: document.getElementById('notes').value,
+                mobility: {
+                    Hamstring: parseInt(document.getElementById('mobilityHamstring').value),
+                    Hip: parseInt(document.getElementById('mobilityHip').value),
+                    Ankle: parseInt(document.getElementById('mobilityAnkle').value),
+                    Shoulder: parseInt(document.getElementById('mobilityShoulder').value),
+                }
+            };
+            localStorage.setItem('bikeFitProfile', JSON.stringify(profile));
+        }
+
+        // Update mobility slider displays
+        ['Hamstring', 'Hip', 'Ankle', 'Shoulder'].forEach(name => {
+            const slider = document.getElementById('mobility' + name);
+            const valueDisplay = document.getElementById('mobility' + name + 'Value');
+            if (slider && valueDisplay) {
+                slider.addEventListener('input', (e) => {
+                    valueDisplay.textContent = e.target.value;
+                    saveProfile();
+                });
+            }
+        });
+
+        // Save profile on change
+        document.getElementById('bikeType').addEventListener('change', saveProfile);
+        document.getElementById('goal').addEventListener('change', saveProfile);
+        document.getElementById('notes').addEventListener('input', saveProfile);
+
+        // Load profile on page load
+        loadProfile();
+
+        // File selection handler
+        videoFileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                fileNameDisplay.textContent = `Selected: ${file.name}`;
+                analyzeBtn.disabled = false;
+                error.classList.remove('active');
+                results.classList.remove('active');
+            } else {
+                fileNameDisplay.textContent = '';
+                analyzeBtn.disabled = true;
+            }
+        });
+
+        // Analyze button handler
+        analyzeBtn.addEventListener('click', async () => {
+            const file = videoFileInput.files[0];
+            if (!file) {
+                showError('Please select a video file first.');
+                return;
+            }
+
+            // Reset UI
+            analyzeBtn.disabled = true;
+            loading.classList.add('active');
+            results.classList.remove('active');
+            error.classList.remove('active');
+
+            // Prepare form data
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('bike_type', document.getElementById('bikeType').value);
+            formData.append('goal', document.getElementById('goal').value);
+            formData.append('notes', document.getElementById('notes').value);
+            
+            // Get mobility scores
+            const mobility = {
+                hamstring: parseInt(document.getElementById('mobilityHamstring').value),
+                hip: parseInt(document.getElementById('mobilityHip').value),
+                ankle: parseInt(document.getElementById('mobilityAnkle').value),
+                shoulder: parseInt(document.getElementById('mobilityShoulder').value),
+            };
+            formData.append('mobility', JSON.stringify(mobility));
+
+            // Save profile before sending
+            saveProfile();
+
+            try {
+                const response = await fetch('/analyze-video', {
+                    method: 'POST',
+                    body: formData,
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.detail || 'Analysis failed');
+                }
+
+                const data = await response.json();
+
+                if (!data.pose_detected) {
+                    throw new Error('Pose not detected in video. Please ensure the rider is visible from the left side.');
+                }
+
+                // Display results
+                displayResults(data);
+
+            } catch (err) {
+                showError(err.message || 'An error occurred while analyzing the video.');
+            } finally {
+                loading.classList.remove('active');
+                analyzeBtn.disabled = false;
+            }
+        });
+
+        function displayResults(data) {
+            // Set video source
+            if (data.annotated_video_url) {
+                annotatedVideo.src = data.annotated_video_url;
+                annotatedVideo.load();
+            }
+
+            // Display bike type and goal
+            let bikeTypeText = data.bike_type_label || data.bike_type || 'Road bike';
+            if (data.goal) {
+                bikeTypeText += ` • Goal: ${data.goal}`;
+            }
+            document.getElementById('bikeTypeDisplay').textContent = bikeTypeText;
+
+            // Display fit windows
+            if (data.fit_windows) {
+                const fitWindowsDiv = document.getElementById('fitWindows');
+                fitWindowsDiv.innerHTML = '';
+                
+                const metricLabels = {
+                    knee: 'Knee Angle',
+                    hip: 'Hip Angle',
+                    foot: 'Foot Angle',
+                    torso: 'Torso Angle',
+                    elbow: 'Elbow Angle',
+                };
+
+                Object.keys(data.fit_windows).forEach(metric => {
+                    const window = data.fit_windows[metric];
+                    const statusColors = {
+                        'In Range': '#28a745',
+                        'Slightly Off': '#ffc107',
+                        'Off': '#dc3545',
+                    };
+                    
+                    const card = document.createElement('div');
+                    card.style.cssText = 'background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);';
+                    card.innerHTML = `
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                            <h4 style="margin: 0; color: #333;">${metricLabels[metric] || metric}</h4>
+                            <span style="padding: 4px 12px; border-radius: 12px; font-size: 0.85em; font-weight: 600; background: ${statusColors[window.status] || '#6c757d'}; color: white;">
+                                ${window.status}
+                            </span>
+                        </div>
+                        <div style="color: #666;">
+                            <div>Measured: <strong>${window.measured}°</strong></div>
+                            <div>Target: ${window.target_min}° - ${window.target_max}°</div>
+                        </div>
+                    `;
+                    fitWindowsDiv.appendChild(card);
+                });
+            }
+
+            // Display stroke samples
+            if (data.stroke_samples) {
+                const strokeDiv = document.getElementById('strokeSamples');
+                strokeDiv.innerHTML = '';
+                
+                const positions = [
+                    { key: 'top', label: 'Bottom of Stroke (Leg Extended)' },
+                    { key: 'mid', label: 'Mid Stroke' },
+                    { key: 'bottom', label: 'Top of Stroke (Leg Flexed)' },
+                ];
+
+                positions.forEach(pos => {
+                    const sample = data.stroke_samples[pos.key];
+                    if (!sample) return;
+
+                    const card = document.createElement('div');
+                    card.style.cssText = 'background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);';
+                    
+                    let anglesHtml = '';
+                    if (sample.knee_angle_deg !== null) anglesHtml += `<div>Knee: ${sample.knee_angle_deg.toFixed(1)}°</div>`;
+                    if (sample.hip_angle_deg !== null) anglesHtml += `<div>Hip: ${sample.hip_angle_deg.toFixed(1)}°</div>`;
+                    if (sample.foot_angle_deg !== null) anglesHtml += `<div>Foot: ${sample.foot_angle_deg.toFixed(1)}°</div>`;
+                    
+                    card.innerHTML = `
+                        <h4 style="margin: 0 0 10px 0; color: #667eea; font-size: 1em;">${pos.label}</h4>
+                        <div style="color: #666; font-size: 0.9em;">${anglesHtml || 'No data'}</div>
+                    `;
+                    strokeDiv.appendChild(card);
+                });
+            }
+
+            // Display recommended actions
+            if (data.recommended_actions && data.recommended_actions.length > 0) {
+                const actionsDiv = document.getElementById('recommendedActions');
+                actionsDiv.innerHTML = '';
+                
+                data.recommended_actions.forEach((action, idx) => {
+                    const card = document.createElement('div');
+                    card.style.cssText = 'background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); border-left: 4px solid #667eea;';
+                    card.innerHTML = `
+                        <div style="display: flex; align-items: start; gap: 15px;">
+                            <div style="background: #667eea; color: white; width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 600; flex-shrink: 0;">
+                                ${idx + 1}
+                            </div>
+                            <div style="flex: 1;">
+                                <h4 style="margin: 0 0 8px 0; color: #333;">${action.title}</h4>
+                                <div style="color: #667eea; font-weight: 600; margin-bottom: 8px;">${action.change}</div>
+                                <p style="margin: 0; color: #666; font-size: 0.9em;">${action.reason}</p>
+                            </div>
+                        </div>
+                    `;
+                    actionsDiv.appendChild(card);
+                });
+            }
+
+            // Display angles
+            document.getElementById('kneeAngle').textContent = data.angles.knee_angle_deg.toFixed(1);
+            document.getElementById('hipAngle').textContent = data.angles.hip_angle_deg.toFixed(1);
+            if (data.angles.foot_angle_deg !== null && data.angles.foot_angle_deg !== undefined) {
+                document.getElementById('footAngle').textContent = data.angles.foot_angle_deg.toFixed(1);
+            } else {
+                document.getElementById('footAngle').textContent = '-';
+            }
+            if (data.angles.torso_angle_deg !== null && data.angles.torso_angle_deg !== undefined) {
+                document.getElementById('torsoAngle').textContent = data.angles.torso_angle_deg.toFixed(1);
+            } else {
+                document.getElementById('torsoAngle').textContent = '-';
+            }
+            if (data.angles.elbow_angle_deg !== null && data.angles.elbow_angle_deg !== undefined) {
+                document.getElementById('elbowAngle').textContent = data.angles.elbow_angle_deg.toFixed(1);
+            } else {
+                document.getElementById('elbowAngle').textContent = '-';
+            }
+
+            // Display recommendations
+            document.getElementById('kneeComment').textContent = data.recommendations.knee_comment;
+            document.getElementById('hipComment').textContent = data.recommendations.hip_comment;
+            document.getElementById('footComment').textContent = data.recommendations.foot_comment;
+            document.getElementById('torsoComment').textContent = data.recommendations.torso_comment;
+            document.getElementById('elbowComment').textContent = data.recommendations.elbow_comment;
+            document.getElementById('overallComment').textContent = data.recommendations.summary;
+
+            // Display report
+            document.getElementById('reportText').textContent = data.report;
+
+            // Show results
+            results.classList.add('active');
+            
+            // Scroll to results
+            results.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        function showError(message) {
+            error.textContent = `Error: ${message}`;
+            error.classList.add('active');
+        }
+    </script>
+</body>
+</html>
+
