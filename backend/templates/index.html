@@ -423,6 +423,17 @@
                         </p>
                     </div>
 
+                    <!-- AI Expert Summary -->
+                    <div id="aiSummarySection" style="display: none; margin-bottom: 30px;">
+                        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 12px; padding: 24px; color: white;">
+                            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 16px;">
+                                <span style="font-size: 1.5em;">🤖</span>
+                                <h3 style="margin: 0; font-size: 1.3em; font-weight: 700;">AI Bike Fit Expert</h3>
+                            </div>
+                            <div id="aiSummaryContent" style="line-height: 1.7; font-size: 0.95em;"></div>
+                        </div>
+                    </div>
+
                     <!-- Fit Windows Section -->
                     <div style="margin-bottom: 30px;">
                         <h3 style="color: #667eea; margin-bottom: 15px; font-size: 1.3em;">Fit Window</h3>
@@ -519,6 +530,20 @@
     </div>
 
     <script>
+        function markdownToHtml(md) {
+            let html = md
+                .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                .replace(/\*(.+?)\*/g, '<em>$1</em>')
+                .replace(/^### (.+)$/gm, '<h4 style="margin: 12px 0 6px 0;">$1</h4>')
+                .replace(/^## (.+)$/gm, '<h3 style="margin: 14px 0 8px 0;">$1</h3>')
+                .replace(/^[-•] (.+)$/gm, '<li style="margin-left: 16px;">$1</li>')
+                .replace(/^(\d+)\. (.+)$/gm, '<li style="margin-left: 16px;"><strong>$1.</strong> $2</li>');
+            html = html.replace(/((?:<li[^>]*>.*<\/li>\s*)+)/g, '<ul style="list-style: none; padding: 0; margin: 8px 0;">$1</ul>');
+            html = html.replace(/\n{2,}/g, '</p><p style="margin: 8px 0;">');
+            html = html.replace(/\n/g, '<br>');
+            return '<p style="margin: 8px 0;">' + html + '</p>';
+        }
+
         const videoFileInput = document.getElementById('videoFile');
         const fileNameDisplay = document.getElementById('fileName');
         const analyzeBtn = document.getElementById('analyzeBtn');
@@ -800,6 +825,16 @@
 
             // Display report
             document.getElementById('reportText').textContent = data.report;
+
+            // Display AI summary
+            if (data.ai_summary) {
+                const aiSection = document.getElementById('aiSummarySection');
+                const aiContent = document.getElementById('aiSummaryContent');
+                aiContent.innerHTML = markdownToHtml(data.ai_summary);
+                aiSection.style.display = 'block';
+            } else {
+                document.getElementById('aiSummarySection').style.display = 'none';
+            }
 
             // Show results
             results.classList.add('active');

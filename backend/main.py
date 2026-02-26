@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from ai_recommendations import generate_ai_summary
 from pose_analysis import (
     analyze_pose_from_frame,
     compute_fit_windows,
@@ -309,6 +310,19 @@ async def analyze_video(
         annotated_video_url = f"{base_url}/outputs/{video_filename}"
         annotated_image_url = f"{base_url}/outputs/{image_filename}"
 
+        # Generate AI-powered summary (non-blocking; returns None if no API key)
+        ai_summary = await generate_ai_summary(
+            angles=angles_dict,
+            fit_windows=fit_windows,
+            stroke_samples=stroke_samples,
+            recommended_actions=recommended_actions,
+            bike_type=internal_bike_type,
+            bike_type_label=bike_config["label"],
+            goal=goal,
+            mobility=mobility_dict,
+            notes=notes,
+        )
+
         return {
             "pose_detected": True,
             "frame_index_used": best_frame_index,
@@ -332,6 +346,7 @@ async def analyze_video(
             "report": report,
             "annotated_image_url": annotated_image_url,
             "annotated_video_url": annotated_video_url,
+            "ai_summary": ai_summary,
         }
     finally:
         if temp_path and os.path.exists(temp_path):
