@@ -663,10 +663,6 @@ def draw_pose_overlay(
         mid_hip = landmarks_px.get("mid_hip")
         
         if mid_shoulder is not None and mid_hip is not None:
-            # Draw torso line (mid_hip → mid_shoulder) in distinct color for debugging
-            torso_line_color = (255, 0, 255)  # Magenta in BGR for visibility
-            cv2.line(annotated, mid_hip, mid_shoulder, torso_line_color, 4)
-            
             # Get debug info if available
             debug_info = _smoothing_state.get("torso_debug", {})
             dx = debug_info.get("dx", 0)
