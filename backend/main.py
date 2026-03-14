@@ -12,6 +12,14 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from framing_assessment import (
+    DEFAULT_CONFIG as FRAMING_CONFIG,
+    FrameAssessment,
+    LandmarkPoint,
+    VideoAssessment,
+    aggregate_video_framing,
+    assess_frame_framing,
+)
 from pose_analysis import (
     analyze_pose_from_frame,
     compute_fit_windows,
@@ -179,6 +187,7 @@ async def analyze_video(
         ]  # Sample 20 frames for better stroke detection
 
         frame_results = []
+        framing_frame_assessments: list[FrameAssessment] = []
         min_knee_angle = float("inf")
         max_knee_angle = -1
         min_knee_idx = 0
@@ -210,7 +219,28 @@ async def analyze_video(
                     max_knee_angle = knee_angle
                     max_knee_idx = idx
 
+                # Framing assessment: convert landmark visibility to LandmarkPoints
+                vis_data = pose_result.get("landmark_visibility", {})
+                framing_landmarks = [
+                    LandmarkPoint(
+                        name=name,
+                        x=info["x"],
+                        y=info["y"],
+                        confidence=info["confidence"],
+                    )
+                    for name, info in vis_data.items()
+                ]
+                if framing_landmarks:
+                    framing_frame_assessments.append(
+                        assess_frame_framing(framing_landmarks, FRAMING_CONFIG)
+                    )
+
         cap.release()
+
+        # Aggregate framing assessment across all sampled frames
+        framing_result: VideoAssessment = aggregate_video_framing(
+            framing_frame_assessments, FRAMING_CONFIG
+        )
 
         if not frame_results:
             raise HTTPException(
@@ -332,6 +362,7 @@ async def analyze_video(
             "report": report,
             "annotated_image_url": annotated_image_url,
             "annotated_video_url": annotated_video_url,
+            "framing_assessment": framing_result.to_dict(),
         }
     finally:
         if temp_path and os.path.exists(temp_path):
