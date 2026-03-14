@@ -279,6 +279,60 @@
             display: block;
         }
 
+        .framing-warning {
+            display: none;
+            padding: 18px 24px;
+            border-radius: 10px;
+            margin-bottom: 24px;
+            line-height: 1.6;
+            font-size: 0.95em;
+        }
+
+        .framing-warning.active {
+            display: flex;
+            align-items: flex-start;
+            gap: 14px;
+        }
+
+        .framing-warning .fw-icon {
+            font-size: 1.6em;
+            flex-shrink: 0;
+            line-height: 1;
+        }
+
+        .framing-warning .fw-body {
+            flex: 1;
+        }
+
+        .framing-warning .fw-title {
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+
+        .framing-warning .fw-score {
+            margin-top: 8px;
+            font-size: 0.85em;
+            opacity: 0.8;
+        }
+
+        .framing-warning.severity-error {
+            background: #fce4e4;
+            border-left: 5px solid #dc3545;
+            color: #721c24;
+        }
+
+        .framing-warning.severity-warn {
+            background: #fff8e1;
+            border-left: 5px solid #ffc107;
+            color: #7a6100;
+        }
+
+        .framing-warning.severity-good {
+            background: #e8f5e9;
+            border-left: 5px solid #28a745;
+            color: #1b5e20;
+        }
+
         @media (max-width: 768px) {
             .header h1 {
                 font-size: 2em;
@@ -423,6 +477,15 @@
                         </p>
                     </div>
 
+                    <!-- Framing Quality Warning -->
+                    <div class="framing-warning" id="framingWarning">
+                        <span class="fw-icon" id="framingIcon"></span>
+                        <div class="fw-body">
+                            <div class="fw-title" id="framingTitle"></div>
+                            <div class="fw-message" id="framingMessage"></div>
+                            <div class="fw-score" id="framingScore"></div>
+                        </div>
+                    </div>
 
                     <!-- Fit Windows Section -->
                     <div style="margin-bottom: 30px;">
@@ -802,11 +865,46 @@
             // Display report
             document.getElementById('reportText').textContent = data.report;
 
+            // Display framing assessment warning
+            displayFramingWarning(data.framing_assessment);
+
             // Show results
             results.classList.add('active');
             
             // Scroll to results
             results.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        function displayFramingWarning(assessment) {
+            const el = document.getElementById('framingWarning');
+            if (!assessment || assessment.status === 'good') {
+                el.classList.remove('active', 'severity-error', 'severity-warn', 'severity-good');
+                return;
+            }
+
+            const isError = ['too_close', 'cropped'].includes(assessment.status) && assessment.score < 0.4;
+            const isWarn = !isError;
+            const severityClass = isError ? 'severity-error' : 'severity-warn';
+
+            const icons = {
+                too_close: '📐',
+                cropped: '✂️',
+                too_far: '🔭',
+                low_confidence: '⚠️',
+            };
+            const titles = {
+                too_close: 'Camera Too Close',
+                cropped: 'Rider Partially Cropped',
+                too_far: 'Camera Too Far',
+                low_confidence: 'Low Confidence Detection',
+            };
+
+            el.className = 'framing-warning active ' + severityClass;
+            document.getElementById('framingIcon').textContent = icons[assessment.status] || '⚠️';
+            document.getElementById('framingTitle').textContent = titles[assessment.status] || 'Framing Issue';
+            document.getElementById('framingMessage').textContent = assessment.message;
+            document.getElementById('framingScore').textContent =
+                'Confidence score: ' + Math.round(assessment.score * 100) + '%';
         }
 
         function showError(message) {

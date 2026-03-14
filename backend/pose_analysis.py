@@ -506,6 +506,28 @@ def analyze_pose_from_frame(frame_rgb: np.ndarray) -> Dict[str, object]:
     if torso_angle is not None and math.isnan(torso_angle):
         torso_angle = None
 
+    # Collect per-landmark visibility for framing assessment
+    _landmark_visibility = {}
+    for _name, _enum in [
+        ("nose", mp_pose.PoseLandmark.NOSE),
+        ("left_shoulder", mp_pose.PoseLandmark.LEFT_SHOULDER),
+        ("right_shoulder", mp_pose.PoseLandmark.RIGHT_SHOULDER),
+        ("left_elbow", mp_pose.PoseLandmark.LEFT_ELBOW),
+        ("left_wrist", mp_pose.PoseLandmark.LEFT_WRIST),
+        ("left_hip", mp_pose.PoseLandmark.LEFT_HIP),
+        ("right_hip", mp_pose.PoseLandmark.RIGHT_HIP),
+        ("left_knee", mp_pose.PoseLandmark.LEFT_KNEE),
+        ("left_ankle", mp_pose.PoseLandmark.LEFT_ANKLE),
+        ("left_foot_index", mp_pose.PoseLandmark.LEFT_FOOT_INDEX),
+    ]:
+        try:
+            _lm = landmarks.landmark[_enum]
+            _landmark_visibility[_name] = {
+                "x": _lm.x, "y": _lm.y, "confidence": _lm.visibility,
+            }
+        except (IndexError, AttributeError):
+            _landmark_visibility[_name] = {"x": 0.0, "y": 0.0, "confidence": 0.0}
+
     result = {
         "pose_detected": True,
         "knee_angle_deg": round(knee_angle, 2),
@@ -521,6 +543,7 @@ def analyze_pose_from_frame(frame_rgb: np.ndarray) -> Dict[str, object]:
             "elbow": elbow_px,
             "wrist": wrist_px,
         },
+        "landmark_visibility": _landmark_visibility,
     }
     
     # Add optional angles (can be None if not detected)
