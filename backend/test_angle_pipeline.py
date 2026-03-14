@@ -198,6 +198,33 @@ class TestTorsoToHorizontal:
         assert angle is not None
         assert angle < 5.0
 
+    def test_portrait_rotation_compensated(self):
+        """A portrait video rotated 90° CW should give the same torso angle
+        as the original un-rotated orientation.
+
+        Original: hip=(0.50,0.50) shoulder=(0.65,0.47) → ~11° from horizontal.
+        After 90° CW: (x,y)→(1-y,x) → hip=(0.50,0.50) shoulder=(0.53,0.65).
+        Without compensation the rotated vector gives ~79°. With frame_rotation_deg=90
+        it should recover ~11°.
+        """
+        # Original (no rotation)
+        angle_orig, _ = compute_torso_to_horizontal_deg(
+            (0.50, 0.50), (0.65, 0.47), frame_rotation_deg=0)
+
+        # Rotated landmarks + compensation
+        angle_comp, _ = compute_torso_to_horizontal_deg(
+            (0.50, 0.50), (0.53, 0.65), frame_rotation_deg=90)
+
+        # Rotated landmarks WITHOUT compensation → wrong
+        angle_wrong, _ = compute_torso_to_horizontal_deg(
+            (0.50, 0.50), (0.53, 0.65), frame_rotation_deg=0)
+
+        assert angle_orig is not None and angle_comp is not None
+        assert abs(angle_orig - angle_comp) < 1.0, (
+            f"Compensated ({angle_comp:.1f}°) should match original ({angle_orig:.1f}°)")
+        assert angle_wrong > 70, (
+            f"Without compensation should be ~79°, got {angle_wrong:.1f}°")
+
 
 # ===========================================================================
 # Test: hip angle (included joint angle)
@@ -365,29 +392,30 @@ class TestMetricReliability:
 # ===========================================================================
 
 class TestNoDoubleRotation:
-    def test_torso_angle_same_regardless_of_frame_rotation_state(self):
-        """compute_torso_to_horizontal_deg does NOT read or use
-        _smoothing_state['display_rotation_deg']. Changing that global
-        must not affect the result."""
+    def test_function_uses_explicit_param_not_global(self):
+        """compute_torso_to_horizontal_deg uses its frame_rotation_deg
+        parameter, NOT _smoothing_state.  The global should not affect
+        the result when calling the function directly."""
         from pose_analysis import _smoothing_state
 
         hip = (0.4, 0.6)
         shoulder = (0.5, 0.3)
 
-        _smoothing_state["display_rotation_deg"] = 0
-        angle_0, _ = compute_torso_to_horizontal_deg(hip, shoulder)
-
-        _smoothing_state["display_rotation_deg"] = 90
-        angle_90, _ = compute_torso_to_horizontal_deg(hip, shoulder)
-
-        _smoothing_state["display_rotation_deg"] = 270
-        angle_270, _ = compute_torso_to_horizontal_deg(hip, shoulder)
-
+        _smoothing_state["display_rotation_deg"] = 999  # garbage value
+        angle, _ = compute_torso_to_horizontal_deg(hip, shoulder, frame_rotation_deg=0)
         _smoothing_state["display_rotation_deg"] = 0  # reset
 
-        assert angle_0 is not None
-        assert abs(angle_0 - angle_90) < 0.01
-        assert abs(angle_0 - angle_270) < 0.01
+        angle_clean, _ = compute_torso_to_horizontal_deg(hip, shoulder, frame_rotation_deg=0)
+        assert angle is not None
+        assert abs(angle - angle_clean) < 0.01
+
+    def test_no_rotation_for_landscape_video(self):
+        """With frame_rotation_deg=0, the function must not rotate anything."""
+        hip = (0.4, 0.6)
+        shoulder = (0.5, 0.3)
+        angle, diag = compute_torso_to_horizontal_deg(hip, shoulder, frame_rotation_deg=0)
+        assert angle is not None
+        assert diag.get("frame_rotation_deg") == 0
 
 
 # ===========================================================================

@@ -117,47 +117,68 @@ def compute_signed_segment_angle_deg(
 def compute_torso_to_horizontal_deg(
     hip: Tuple[float, float],
     shoulder: Tuple[float, float],
+    frame_rotation_deg: int = 0,
 ) -> Tuple[Optional[float], Dict[str, object]]:
-    """Torso angle relative to horizontal for side-on bike fit.
+    """Torso angle relative to **real-world horizontal** for side-on bike fit.
 
-    Definition: the acute angle between the hip→shoulder line and the
-    horizontal axis.  0° = perfectly flat (maximally aero), 90° = upright.
+    Definition
+    ----------
+    0° = torso perfectly horizontal (maximally aero).
+    90° = torso perfectly vertical (standing upright).
 
-    The function first computes the signed angle of the hip→shoulder
-    vector in maths coordinates, validates orientation, then returns the
-    magnitude (angle to horizontal).
+    Algorithm
+    ---------
+    1. Build the hip→shoulder vector in the (possibly rotated) image frame.
+    2. If the frame was rotated by ``_normalize_frame_orientation`` (e.g.
+       portrait 90° CW), un-rotate the vector so it is back in the
+       original camera orientation where +x = real-world horizontal.
+       This is a deterministic coordinate transform using a **known**
+       rotation angle — not a heuristic.
+    3. Compute ``angle = abs(atan2(dy, dx))`` in image coordinates (y-down)
+       and take the acute angle to horizontal: ``min(angle, 180 - angle)``.
+    4. Validate that the shoulder is above the hip; flag unreliable if not.
 
-    Returns:
-        ``(angle_deg, diagnostics)`` where *angle_deg* is in [0, 90] or
-        ``None`` if the vector has zero length.  *diagnostics* contains
-        debugging metadata.
+    Parameters
+    ----------
+    frame_rotation_deg :
+        Degrees the frame was rotated **clockwise** before MediaPipe
+        processed it (from ``_smoothing_state["display_rotation_deg"]``).
+        Typical values: 0 (landscape, no rotation) or 90 (portrait → landscape).
     """
     dx = shoulder[0] - hip[0]
     dy = shoulder[1] - hip[1]
-    length = math.sqrt(dx * dx + dy * dy)
 
+    # Un-rotate the torso vector when the frame was rotated for normalisation.
+    # The landmarks are in the rotated frame's coordinate space; this puts them
+    # back in the original camera space where x = real-world horizontal.
+    if frame_rotation_deg != 0:
+        rad = math.radians(-frame_rotation_deg)
+        cos_r, sin_r = math.cos(rad), math.sin(rad)
+        dx, dy = cos_r * dx - sin_r * dy, sin_r * dx + cos_r * dy
+
+    length = math.sqrt(dx * dx + dy * dy)
     if length < 1e-6:
         return None, {"valid": False, "reason": "zero_length_vector"}
 
-    signed_angle = math.degrees(math.atan2(-dy, dx))
-
-    # Shoulder above hip in image coords ↔ dy < 0 ↔ signed_angle > 0
-    shoulder_above_hip = dy < 0
-
-    # Acute angle between the torso line and the horizontal axis
-    abs_angle = abs(signed_angle)
-    angle_to_horizontal = abs_angle if abs_angle <= 90.0 else 180.0 - abs_angle
+    # Angle to horizontal: abs(atan2(dy, dx)) gives the angle of the vector
+    # from the +x axis in image coordinates (y-down).  Taking the acute angle
+    # to the nearest horizontal axis (0° or 180°) gives the torso tilt.
+    raw_angle_deg = abs(math.degrees(math.atan2(dy, dx)))
+    angle_to_horizontal = min(raw_angle_deg, 180.0 - raw_angle_deg)
     angle_to_horizontal = max(0.0, min(90.0, angle_to_horizontal))
 
+    # After un-rotation, shoulder above hip in the original image ↔ dy < 0.
+    shoulder_above_hip = dy < 0
     reliable = shoulder_above_hip
 
     diagnostics: Dict[str, object] = {
         "valid": True,
         "reliable": reliable,
         "shoulder_above_hip": shoulder_above_hip,
-        "signed_angle_deg": round(signed_angle, 2),
+        "raw_angle_deg": round(raw_angle_deg, 2),
         "dx": round(dx, 4),
         "dy": round(dy, 4),
+        "frame_rotation_deg": frame_rotation_deg,
     }
     return angle_to_horizontal, diagnostics
 
@@ -558,11 +579,14 @@ def analyze_pose_from_frame(frame_rgb: np.ndarray) -> Dict[str, object]:
             )
             _smoothing_state["foot_angle_ema"] = foot_angle
 
-    # Torso: angle of hip→shoulder line relative to horizontal.
-    # Uses the chosen-side shoulder and hip — no midpoints, no rotation
-    # compensation.  The frame was already normalised to landscape before
-    # MediaPipe, so the x-axis IS horizontal.
-    torso_angle_raw, torso_diag = compute_torso_to_horizontal_deg(hip_norm, shoulder_norm)
+    # Torso: angle of hip→shoulder line relative to real-world horizontal.
+    # Uses the chosen-side shoulder and hip.  Passes the known frame
+    # rotation so the vector is un-rotated back to the original camera
+    # orientation before measuring the angle.
+    frame_rot = _smoothing_state.get("display_rotation_deg", 0)
+    torso_angle_raw, torso_diag = compute_torso_to_horizontal_deg(
+        hip_norm, shoulder_norm, frame_rotation_deg=frame_rot,
+    )
 
     torso_angle: Optional[float] = None
     if torso_angle_raw is not None:
