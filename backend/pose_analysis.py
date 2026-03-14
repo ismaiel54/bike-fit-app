@@ -8,13 +8,184 @@ import numpy as np
 
 mp_pose = mp.solutions.pose
 
-    # Global state for temporal smoothing and rotation tracking
+# Global state for temporal smoothing and rotation tracking
 _smoothing_state = {
     "foot_angle_ema": None,
     "torso_angle_ema": None,
-    "torso_debug": None,  # Store dx, dy for debugging
-    "display_rotation_deg": 0,  # Rotation applied to frames (0, 90, 180, 270)
+    "torso_debug": None,
+    "display_rotation_deg": 0,
 }
+
+# ---------------------------------------------------------------------------
+# Constants for the angle pipeline
+# ---------------------------------------------------------------------------
+
+MIN_LANDMARK_CONFIDENCE = 0.4
+
+SIDE_LANDMARK_ENUMS: Dict[str, Dict[str, int]] = {
+    "left": {
+        "shoulder": mp_pose.PoseLandmark.LEFT_SHOULDER,
+        "hip": mp_pose.PoseLandmark.LEFT_HIP,
+        "knee": mp_pose.PoseLandmark.LEFT_KNEE,
+        "ankle": mp_pose.PoseLandmark.LEFT_ANKLE,
+        "elbow": mp_pose.PoseLandmark.LEFT_ELBOW,
+        "wrist": mp_pose.PoseLandmark.LEFT_WRIST,
+        "foot_index": mp_pose.PoseLandmark.LEFT_FOOT_INDEX,
+    },
+    "right": {
+        "shoulder": mp_pose.PoseLandmark.RIGHT_SHOULDER,
+        "hip": mp_pose.PoseLandmark.RIGHT_HIP,
+        "knee": mp_pose.PoseLandmark.RIGHT_KNEE,
+        "ankle": mp_pose.PoseLandmark.RIGHT_ANKLE,
+        "elbow": mp_pose.PoseLandmark.RIGHT_ELBOW,
+        "wrist": mp_pose.PoseLandmark.RIGHT_WRIST,
+        "foot_index": mp_pose.PoseLandmark.RIGHT_FOOT_INDEX,
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Side selection
+# ---------------------------------------------------------------------------
+
+def select_analysis_side(
+    landmarks,
+    min_confidence: float = MIN_LANDMARK_CONFIDENCE,
+) -> Tuple[str, Dict[str, float]]:
+    """Choose the body side with more reliable landmarks for side-on analysis.
+
+    Evaluates visibility/confidence of key landmarks on each side, giving
+    extra weight to the three joints critical for bike-fit angles (shoulder,
+    hip, knee).
+
+    Returns:
+        (side, scores) where side is ``"left"`` or ``"right"`` and scores
+        maps side names to their weighted-average confidence.
+    """
+    scores: Dict[str, float] = {}
+
+    for side_name, enum_map in SIDE_LANDMARK_ENUMS.items():
+        total = 0.0
+        weight_sum = 0.0
+        for joint_name, enum_val in enum_map.items():
+            weight = 2.0 if joint_name in ("shoulder", "hip", "knee") else 1.0
+            try:
+                conf = landmarks.landmark[enum_val].visibility
+            except (IndexError, AttributeError):
+                conf = 0.0
+            total += conf * weight
+            weight_sum += weight
+        scores[side_name] = total / weight_sum if weight_sum > 0 else 0.0
+
+    chosen = "left" if scores.get("left", 0) >= scores.get("right", 0) else "right"
+    return chosen, scores
+
+
+# ---------------------------------------------------------------------------
+# Landmark accessors with confidence
+# ---------------------------------------------------------------------------
+
+def _get_landmark_with_confidence(
+    landmarks, landmark_enum,
+) -> Tuple[float, float, float]:
+    """Return ``(x, y, confidence)`` in normalised image coordinates."""
+    lm = landmarks.landmark[landmark_enum]
+    return (lm.x, lm.y, lm.visibility)
+
+
+# ---------------------------------------------------------------------------
+# Geometry helpers — explicit names, explicit coordinate handling
+# ---------------------------------------------------------------------------
+
+def compute_signed_segment_angle_deg(
+    p_from: Tuple[float, float],
+    p_to: Tuple[float, float],
+) -> float:
+    """Signed angle of the directed segment *p_from→p_to* from the +x axis.
+
+    Converts from **image** coordinates (y increases downward) to standard
+    maths coordinates (y increases upward) by negating dy.
+
+    Returns:
+        Angle in degrees in **[-180, 180]**, counter-clockwise positive.
+    """
+    dx = p_to[0] - p_from[0]
+    dy = p_to[1] - p_from[1]
+    return math.degrees(math.atan2(-dy, dx))
+
+
+def compute_torso_to_horizontal_deg(
+    hip: Tuple[float, float],
+    shoulder: Tuple[float, float],
+) -> Tuple[Optional[float], Dict[str, object]]:
+    """Torso angle relative to horizontal for side-on bike fit.
+
+    Definition: the acute angle between the hip→shoulder line and the
+    horizontal axis.  0° = perfectly flat (maximally aero), 90° = upright.
+
+    The function first computes the signed angle of the hip→shoulder
+    vector in maths coordinates, validates orientation, then returns the
+    magnitude (angle to horizontal).
+
+    Returns:
+        ``(angle_deg, diagnostics)`` where *angle_deg* is in [0, 90] or
+        ``None`` if the vector has zero length.  *diagnostics* contains
+        debugging metadata.
+    """
+    dx = shoulder[0] - hip[0]
+    dy = shoulder[1] - hip[1]
+    length = math.sqrt(dx * dx + dy * dy)
+
+    if length < 1e-6:
+        return None, {"valid": False, "reason": "zero_length_vector"}
+
+    signed_angle = math.degrees(math.atan2(-dy, dx))
+
+    # Shoulder above hip in image coords ↔ dy < 0 ↔ signed_angle > 0
+    shoulder_above_hip = dy < 0
+
+    # Acute angle between the torso line and the horizontal axis
+    abs_angle = abs(signed_angle)
+    angle_to_horizontal = abs_angle if abs_angle <= 90.0 else 180.0 - abs_angle
+    angle_to_horizontal = max(0.0, min(90.0, angle_to_horizontal))
+
+    reliable = shoulder_above_hip
+
+    diagnostics: Dict[str, object] = {
+        "valid": True,
+        "reliable": reliable,
+        "shoulder_above_hip": shoulder_above_hip,
+        "signed_angle_deg": round(signed_angle, 2),
+        "dx": round(dx, 4),
+        "dy": round(dy, 4),
+    }
+    return angle_to_horizontal, diagnostics
+
+
+def get_metric_reliability(
+    landmarks,
+    required_enums: List,
+    min_confidence: float = MIN_LANDMARK_CONFIDENCE,
+) -> Tuple[bool, float, List[str]]:
+    """Check that every landmark in *required_enums* meets *min_confidence*.
+
+    Returns:
+        ``(is_reliable, mean_confidence, weak_landmark_names)``
+    """
+    confidences: List[float] = []
+    weak: List[str] = []
+    for enum_val in required_enums:
+        try:
+            conf = landmarks.landmark[enum_val].visibility
+        except (IndexError, AttributeError):
+            conf = 0.0
+        confidences.append(conf)
+        if conf < min_confidence:
+            name = enum_val.name if hasattr(enum_val, "name") else str(enum_val)
+            weak.append(name)
+
+    mean_conf = sum(confidences) / len(confidences) if confidences else 0.0
+    return len(weak) == 0, mean_conf, weak
 
 
 def _get_landmark_coords(
@@ -167,48 +338,35 @@ def _smooth_angle_with_ema(
 
 
 def _robust_foot_keypoint(
-    landmarks: mp.solutions.pose.PoseLandmark,
+    landmarks,
     frame_width: int,
     frame_height: int,
     min_confidence: float = 0.5,
+    foot_enum=None,
 ) -> Tuple[Optional[Tuple[float, float]], str]:
-    """
-    Robustly extract foot keypoint with confidence gating and fallback strategy.
-    
+    """Robustly extract foot keypoint with confidence gating and fallback.
+
     Args:
-        landmarks: MediaPipe pose landmarks
-        frame_width: Frame width in pixels
-        frame_height: Frame height in pixels
-        min_confidence: Minimum confidence threshold
-    
-    Returns:
-        (foot_point, source) where foot_point is (x, y) normalized coords or None,
-        and source is "primary", "fallback", or "missing"
+        foot_enum: MediaPipe landmark enum for the foot index to use.
+                   Defaults to LEFT_FOOT_INDEX for backward compatibility.
     """
-    # Primary: foot_index (toe)
+    if foot_enum is None:
+        foot_enum = mp_pose.PoseLandmark.LEFT_FOOT_INDEX
+
     try:
-        foot_index_landmark = landmarks.landmark[mp_pose.PoseLandmark.LEFT_FOOT_INDEX]
-        foot_index_conf = foot_index_landmark.visibility  # MediaPipe uses visibility as confidence
-        
-        if foot_index_conf >= min_confidence:
-            foot_index_norm = (foot_index_landmark.x, foot_index_landmark.y)
-            return foot_index_norm, "primary"
+        lm = landmarks.landmark[foot_enum]
+        if lm.visibility >= min_confidence:
+            return (lm.x, lm.y), "primary"
     except (IndexError, AttributeError):
         pass
-    
-    # Fallback: heel (if available) or foot_index with lower confidence
+
     try:
-        # Try heel if available (some MediaPipe models have it)
-        # For now, fallback to foot_index with lower threshold
-        foot_index_landmark = landmarks.landmark[mp_pose.PoseLandmark.LEFT_FOOT_INDEX]
-        foot_index_conf = foot_index_landmark.visibility
-        
-        if foot_index_conf >= min_confidence * 0.7:  # Lower threshold for fallback
-            foot_index_norm = (foot_index_landmark.x, foot_index_landmark.y)
-            return foot_index_norm, "fallback"
+        lm = landmarks.landmark[foot_enum]
+        if lm.visibility >= min_confidence * 0.7:
+            return (lm.x, lm.y), "fallback"
     except (IndexError, AttributeError):
         pass
-    
+
     return None, "missing"
 
 
@@ -301,213 +459,136 @@ def analyze_pose_from_frame(frame_rgb: np.ndarray) -> Dict[str, object]:
         return {"pose_detected": False}
 
     landmarks = results.pose_landmarks
-    try:
-        # Get mid-torso points for stable measurement
-        mid_shoulder_norm, mid_hip_norm = _get_mid_torso_points(landmarks)
-        
-        if mid_shoulder_norm is None or mid_hip_norm is None:
-            # Fallback to left side if mid-points unavailable
-            try:
-                mid_shoulder_norm = _get_landmark_coords(landmarks, mp_pose.PoseLandmark.LEFT_SHOULDER)
-                mid_hip_norm = _get_landmark_coords(landmarks, mp_pose.PoseLandmark.LEFT_HIP)
-            except (IndexError, AttributeError):
-                return {"pose_detected": False}
-        
-        # Get other landmarks (always use left side for now, can be extended)
-        left_shoulder_norm = _get_landmark_coords(landmarks, mp_pose.PoseLandmark.LEFT_SHOULDER)
-        left_hip_norm = _get_landmark_coords(landmarks, mp_pose.PoseLandmark.LEFT_HIP)
-        knee_norm = _get_landmark_coords(landmarks, mp_pose.PoseLandmark.LEFT_KNEE)
-        ankle_norm = _get_landmark_coords(landmarks, mp_pose.PoseLandmark.LEFT_ANKLE)
-        elbow_norm = _get_landmark_coords(landmarks, mp_pose.PoseLandmark.LEFT_ELBOW)
-        wrist_norm = _get_landmark_coords(landmarks, mp_pose.PoseLandmark.LEFT_WRIST)
-        
-        # Robust foot keypoint detection with confidence gating and fallback
-        foot_norm, foot_source = _robust_foot_keypoint(landmarks, frame_width, frame_height, min_confidence=0.5)
 
-        # Pixel coordinates for drawing
-        # Get mid-torso points for visualization
-        left_shoulder_px = _get_landmark_pixel_coords(
-            landmarks, mp_pose.PoseLandmark.LEFT_SHOULDER, frame_width, frame_height
-        )
-        right_shoulder_px = _get_landmark_pixel_coords(
-            landmarks, mp_pose.PoseLandmark.RIGHT_SHOULDER, frame_width, frame_height
-        )
-        left_hip_px = _get_landmark_pixel_coords(
-            landmarks, mp_pose.PoseLandmark.LEFT_HIP, frame_width, frame_height
-        )
-        right_hip_px = _get_landmark_pixel_coords(
-            landmarks, mp_pose.PoseLandmark.RIGHT_HIP, frame_width, frame_height
-        )
-        
-        # Compute mid-points in pixel coordinates
-        mid_shoulder_px = (
-            (left_shoulder_px[0] + right_shoulder_px[0]) // 2,
-            (left_shoulder_px[1] + right_shoulder_px[1]) // 2,
-        )
-        mid_hip_px = (
-            (left_hip_px[0] + right_hip_px[0]) // 2,
-            (left_hip_px[1] + right_hip_px[1]) // 2,
-        )
-        
-        # Apply rotation to pixel coordinates for visualization
-        # Use the compensation rotation (opposite of frame rotation)
-        compensation_rot = _smoothing_state.get("display_rotation_deg", 0)
-        if compensation_rot != 0:
-            center_x, center_y = frame_width / 2, frame_height / 2
-            
-            # Translate to origin, rotate, translate back
-            def rotate_pixel_point(px, py):
-                px -= center_x
-                py -= center_y
-                if compensation_rot == 90:
-                    px, py = -py, px
-                elif compensation_rot == 180:
-                    px, py = -px, -py
-                elif compensation_rot == 270:
-                    px, py = py, -px
-                px += center_x
-                py += center_y
-                return (int(px), int(py))
-            
-            mid_shoulder_px = rotate_pixel_point(mid_shoulder_px[0], mid_shoulder_px[1])
-            mid_hip_px = rotate_pixel_point(mid_hip_px[0], mid_hip_px[1])
-        knee_px = _get_landmark_pixel_coords(
-            landmarks, mp_pose.PoseLandmark.LEFT_KNEE, frame_width, frame_height
-        )
-        ankle_px = _get_landmark_pixel_coords(
-            landmarks, mp_pose.PoseLandmark.LEFT_ANKLE, frame_width, frame_height
-        )
-        # Use robust foot keypoint for pixel coordinates too
-        if foot_norm is not None:
-            foot_px = (
-                int(foot_norm[0] * frame_width),
-                int(foot_norm[1] * frame_height),
-            )
-        else:
-            # Fallback to foot_index even if low confidence (for drawing only)
-            try:
-                foot_px = _get_landmark_pixel_coords(
-                    landmarks, mp_pose.PoseLandmark.LEFT_FOOT_INDEX, frame_width, frame_height
-                )
-            except (IndexError, AttributeError):
-                foot_px = None
-        elbow_px = _get_landmark_pixel_coords(
-            landmarks, mp_pose.PoseLandmark.LEFT_ELBOW, frame_width, frame_height
-        )
-        wrist_px = _get_landmark_pixel_coords(
-            landmarks, mp_pose.PoseLandmark.LEFT_WRIST, frame_width, frame_height
-        )
+    # ------------------------------------------------------------------
+    # 1. Select the best body side for this frame
+    # ------------------------------------------------------------------
+    analysis_side, side_scores = select_analysis_side(landmarks)
+    side_enums = SIDE_LANDMARK_ENUMS[analysis_side]
+
+    # ------------------------------------------------------------------
+    # 2. Extract chosen-side landmarks (normalised coords)
+    # ------------------------------------------------------------------
+    try:
+        shoulder_norm = _get_landmark_coords(landmarks, side_enums["shoulder"])
+        hip_norm = _get_landmark_coords(landmarks, side_enums["hip"])
+        knee_norm = _get_landmark_coords(landmarks, side_enums["knee"])
+        ankle_norm = _get_landmark_coords(landmarks, side_enums["ankle"])
+        elbow_norm = _get_landmark_coords(landmarks, side_enums["elbow"])
+        wrist_norm = _get_landmark_coords(landmarks, side_enums["wrist"])
     except (IndexError, AttributeError):
         return {"pose_detected": False}
 
-    knee_angle = _compute_angle_deg(left_hip_norm, knee_norm, ankle_norm)
-    hip_angle = _compute_angle_deg(left_shoulder_norm, left_hip_norm, knee_norm)
-    
-    # Compute foot angle with robust keypoint detection
-    foot_angle = None
+    foot_norm, foot_source = _robust_foot_keypoint(
+        landmarks, frame_width, frame_height,
+        min_confidence=0.5,
+        foot_enum=side_enums["foot_index"],
+    )
+
+    # ------------------------------------------------------------------
+    # 3. Pixel coordinates for drawing (chosen side)
+    # ------------------------------------------------------------------
+    try:
+        shoulder_px = _get_landmark_pixel_coords(
+            landmarks, side_enums["shoulder"], frame_width, frame_height)
+        hip_px = _get_landmark_pixel_coords(
+            landmarks, side_enums["hip"], frame_width, frame_height)
+        knee_px = _get_landmark_pixel_coords(
+            landmarks, side_enums["knee"], frame_width, frame_height)
+        ankle_px = _get_landmark_pixel_coords(
+            landmarks, side_enums["ankle"], frame_width, frame_height)
+        elbow_px = _get_landmark_pixel_coords(
+            landmarks, side_enums["elbow"], frame_width, frame_height)
+        wrist_px = _get_landmark_pixel_coords(
+            landmarks, side_enums["wrist"], frame_width, frame_height)
+    except (IndexError, AttributeError):
+        return {"pose_detected": False}
+
     if foot_norm is not None:
-        foot_angle_raw = _compute_angle_deg(knee_norm, ankle_norm, foot_norm)  # plantar/dorsi vs shank
+        foot_px: Optional[Tuple[int, int]] = (
+            int(foot_norm[0] * frame_width),
+            int(foot_norm[1] * frame_height),
+        )
+    else:
+        try:
+            foot_px = _get_landmark_pixel_coords(
+                landmarks, side_enums["foot_index"], frame_width, frame_height)
+        except (IndexError, AttributeError):
+            foot_px = None
+
+    # ------------------------------------------------------------------
+    # 4. Reliability checks for key metrics
+    # ------------------------------------------------------------------
+    hip_reliable, hip_conf, hip_weak = get_metric_reliability(
+        landmarks,
+        [side_enums["shoulder"], side_enums["hip"], side_enums["knee"]],
+    )
+    torso_reliable, torso_conf, torso_weak = get_metric_reliability(
+        landmarks,
+        [side_enums["shoulder"], side_enums["hip"]],
+    )
+
+    # ------------------------------------------------------------------
+    # 5. Compute angles — all on the chosen side, no rotation hacks
+    # ------------------------------------------------------------------
+
+    # Knee: included angle at knee (hip-knee-ankle).  Rotation-invariant.
+    knee_angle = _compute_angle_deg(hip_norm, knee_norm, ankle_norm)
+
+    # Hip: included angle at hip (shoulder-hip-knee).  Rotation-invariant.
+    # This is the standard bike-fit "closed hip angle".
+    hip_angle = _compute_angle_deg(shoulder_norm, hip_norm, knee_norm)
+
+    # Elbow: included angle at elbow (shoulder-elbow-wrist).
+    elbow_angle = _compute_angle_deg(shoulder_norm, elbow_norm, wrist_norm)
+
+    if math.isnan(knee_angle) or math.isnan(hip_angle) or math.isnan(elbow_angle):
+        return {"pose_detected": False}
+
+    # Foot: optional, with EMA smoothing
+    foot_angle: Optional[float] = None
+    if foot_norm is not None:
+        foot_angle_raw = _compute_angle_deg(knee_norm, ankle_norm, foot_norm)
         if not math.isnan(foot_angle_raw):
-            # Smooth foot angle with EMA and outlier rejection
             foot_angle = _smooth_angle_with_ema(
-                foot_angle_raw, _smoothing_state["foot_angle_ema"], alpha=0.2, outlier_threshold=20.0
+                foot_angle_raw,
+                _smoothing_state["foot_angle_ema"],
+                alpha=0.2,
+                outlier_threshold=20.0,
             )
             _smoothing_state["foot_angle_ema"] = foot_angle
-    
-    # Apply display rotation to torso points before computing angle
-    # This ensures we measure relative to the displayed video's horizontal
-    rot_deg = _smoothing_state.get("display_rotation_deg", 0)
-    
-    # IMPORTANT: If frame was rotated for display, we need to rotate landmarks in OPPOSITE direction
-    # If frame rotated 90° clockwise, rotate landmarks 270° clockwise (or -90°) to compensate
-    compensation_rot = (360 - rot_deg) % 360 if rot_deg != 0 else 0
-    
-    # Auto-detect rotation if torso angle is suspiciously high (>70°) or too low (<5°)
-    # This handles cases where video is landscape but still rotated
-    if compensation_rot == 0:
-        # Try computing angle without rotation first
-        torso_angle_test, dx_test, dy_test = _compute_torso_angle_deg(mid_hip_norm, mid_shoulder_norm)
-        
-        # Check if angle is suspicious (too high or too low)
-        if not math.isnan(torso_angle_test) and (torso_angle_test > 70 or torso_angle_test < 5):
-            # Try all rotation options to find the most reasonable angle (10-60° range)
-            best_rot = 0
-            best_angle = torso_angle_test
-            best_score = abs(torso_angle_test - 35)  # Prefer angles around 35° (typical aero)
-            
-            for test_rot in [90, 180, 270]:
-                mid_hip_rot = _rotate_point_norm(mid_hip_norm, test_rot)
-                mid_shoulder_rot = _rotate_point_norm(mid_shoulder_norm, test_rot)
-                torso_angle_rot, _, _ = _compute_torso_angle_deg(mid_hip_rot, mid_shoulder_rot)
-                
-                if not math.isnan(torso_angle_rot):
-                    # Score: prefer angles in reasonable range (10-60°)
-                    if 10 <= torso_angle_rot <= 60:
-                        score = abs(torso_angle_rot - 35)
-                        if score < best_score:
-                            best_rot = test_rot
-                            best_angle = torso_angle_rot
-                            best_score = score
-                    elif abs(torso_angle_rot - best_angle) > 20:
-                        # If this gives a much different angle, consider it
-                        score = abs(torso_angle_rot - 35)
-                        if score < best_score:
-                            best_rot = test_rot
-                            best_angle = torso_angle_rot
-                            best_score = score
-            
-            if best_rot != 0:
-                compensation_rot = best_rot
-                _smoothing_state["display_rotation_deg"] = best_rot
-                print(f"Auto-detected {best_rot}° compensation rotation: torso angle {torso_angle_test:.1f}° -> {best_angle:.1f}°")
-    
-    mid_hip_rotated = _rotate_point_norm(mid_hip_norm, compensation_rot)
-    mid_shoulder_rotated = _rotate_point_norm(mid_shoulder_norm, compensation_rot)
-    
-    # Compute torso angle with debugging info (using rotated mid-points)
-    torso_angle_raw, dx, dy = _compute_torso_angle_deg(mid_hip_rotated, mid_shoulder_rotated)
-    
-    # Sanity checks
-    if abs(dx) < 1e-3:
-        print(f"WARNING: Torso dx ≈ 0 ({dx:.6f}), possible rotation issue or wrong landmarks")
-    if not math.isnan(torso_angle_raw) and torso_angle_raw > 80:
-        print(f"WARNING: Torso angle very high ({torso_angle_raw:.1f}°), dx={dx:.3f}, dy={dy:.3f}, rot={rot_deg}°")
-    
-    # Store debug info including rotation
-    _smoothing_state["torso_debug"] = {
-        "dx": dx,
-        "dy": dy,
-        "raw_angle": torso_angle_raw,
-        "rotation_deg": compensation_rot,
-        "frame_rotation_deg": rot_deg,
-    }
-    
-    if not math.isnan(torso_angle_raw):
-        # Smooth torso angle with EMA and outlier rejection (tighter threshold for torso)
+
+    # Torso: angle of hip→shoulder line relative to horizontal.
+    # Uses the chosen-side shoulder and hip — no midpoints, no rotation
+    # compensation.  The frame was already normalised to landscape before
+    # MediaPipe, so the x-axis IS horizontal.
+    torso_angle_raw, torso_diag = compute_torso_to_horizontal_deg(hip_norm, shoulder_norm)
+
+    torso_angle: Optional[float] = None
+    if torso_angle_raw is not None:
         torso_angle = _smooth_angle_with_ema(
-            torso_angle_raw, _smoothing_state["torso_angle_ema"], alpha=0.2, outlier_threshold=15.0
+            torso_angle_raw,
+            _smoothing_state["torso_angle_ema"],
+            alpha=0.2,
+            outlier_threshold=15.0,
         )
         _smoothing_state["torso_angle_ema"] = torso_angle
-    else:
-        torso_angle = None
-    
-    elbow_angle = _compute_angle_deg(left_shoulder_norm, elbow_norm, wrist_norm)  # internal angle at elbow
 
-    if (
-        math.isnan(knee_angle)
-        or math.isnan(hip_angle)
-        or math.isnan(elbow_angle)
-    ):
-        return {"pose_detected": False}
-    
-    # Foot and torso angles are optional (can be None if not detected)
+    _smoothing_state["torso_debug"] = {
+        "analysis_side": analysis_side,
+        **(torso_diag if torso_diag else {}),
+    }
+
+    # Clean optional angles
     if foot_angle is not None and math.isnan(foot_angle):
         foot_angle = None
     if torso_angle is not None and math.isnan(torso_angle):
         torso_angle = None
 
-    # Collect per-landmark visibility for framing assessment
-    _landmark_visibility = {}
+    # ------------------------------------------------------------------
+    # 6. Collect per-landmark visibility for framing assessment
+    # ------------------------------------------------------------------
+    _landmark_visibility: Dict[str, Dict[str, float]] = {}
     for _name, _enum in [
         ("nose", mp_pose.PoseLandmark.NOSE),
         ("left_shoulder", mp_pose.PoseLandmark.LEFT_SHOULDER),
@@ -528,48 +609,37 @@ def analyze_pose_from_frame(frame_rgb: np.ndarray) -> Dict[str, object]:
         except (IndexError, AttributeError):
             _landmark_visibility[_name] = {"x": 0.0, "y": 0.0, "confidence": 0.0}
 
-    result = {
+    # ------------------------------------------------------------------
+    # 7. Build result dict (backward-compatible keys)
+    # ------------------------------------------------------------------
+    result: Dict[str, object] = {
         "pose_detected": True,
+        "analysis_side": analysis_side,
         "knee_angle_deg": round(knee_angle, 2),
         "hip_angle_deg": round(hip_angle, 2),
         "elbow_angle_deg": round(elbow_angle, 2),
+        "foot_angle_deg": round(foot_angle, 2) if foot_angle is not None else None,
+        "torso_angle_deg": round(torso_angle, 2) if torso_angle is not None else None,
+        "torso_debug": _smoothing_state.get("torso_debug"),
         "landmarks_px": {
-            "shoulder": left_shoulder_px,
-            "hip": left_hip_px,
-            "mid_shoulder": mid_shoulder_px,
-            "mid_hip": mid_hip_px,
+            "shoulder": shoulder_px,
+            "hip": hip_px,
             "knee": knee_px,
             "ankle": ankle_px,
             "elbow": elbow_px,
             "wrist": wrist_px,
         },
         "landmark_visibility": _landmark_visibility,
+        "angle_reliability": {
+            "hip": {"reliable": hip_reliable, "confidence": round(hip_conf, 3), "weak": hip_weak},
+            "torso": {"reliable": torso_reliable, "confidence": round(torso_conf, 3), "weak": torso_weak},
+            "side_scores": {k: round(v, 3) for k, v in side_scores.items()},
+        },
     }
-    
-    # Add optional angles (can be None if not detected)
-    if foot_angle is not None:
-        result["foot_angle_deg"] = round(foot_angle, 2)
-    else:
-        result["foot_angle_deg"] = None
-    
-    if torso_angle is not None:
-        result["torso_angle_deg"] = round(torso_angle, 2)
-        # Add debug info for torso
-        debug_info = _smoothing_state.get("torso_debug", {})
-        result["torso_debug"] = {
-            "dx": round(debug_info.get("dx", 0), 4),
-            "dy": round(debug_info.get("dy", 0), 4),
-            "raw_angle": round(debug_info.get("raw_angle", 0), 2) if debug_info.get("raw_angle") is not None else None,
-            "rotation_deg": debug_info.get("rotation_deg", 0),
-        }
-    else:
-        result["torso_angle_deg"] = None
-        result["torso_debug"] = None
-    
-    # Add foot pixel coordinates if available
+
     if foot_px is not None:
         result["landmarks_px"]["foot"] = foot_px
-    
+
     return result
 
 
@@ -679,44 +749,24 @@ def draw_pose_overlay(
         )
         cv2.putText(annotated, foot_text, (foot_text_x, foot_text_y), font, font_scale, text_color, thickness)
 
-    # Torso angle label and debugging visualization (using mid-torso points)
+    # Torso angle label (using chosen-side shoulder/hip)
     if torso_angle_deg is not None:
-        # Get mid-torso points for visualization
-        mid_shoulder = landmarks_px.get("mid_shoulder")
-        mid_hip = landmarks_px.get("mid_hip")
-        
-        if mid_shoulder is not None and mid_hip is not None:
-            # Get debug info if available
-            debug_info = _smoothing_state.get("torso_debug", {})
-            dx = debug_info.get("dx", 0)
-            dy = debug_info.get("dy", 0)
-            compensation_rot = debug_info.get("rotation_deg", 0)
-            frame_rot = debug_info.get("frame_rotation_deg", 0)
-            
-            torso_mid_x = (mid_hip[0] + mid_shoulder[0]) // 2
-            torso_mid_y = (mid_hip[1] + mid_shoulder[1]) // 2
-            
-            # Display angle with explicit label
-            torso_text = f"Torso (to horizontal): {torso_angle_deg:.1f}°"
-            torso_text_size = cv2.getTextSize(torso_text, font, font_scale, thickness)[0]
-            torso_text_x = torso_mid_x - torso_text_size[0] // 2
-            torso_text_y = torso_mid_y - 20
+        torso_mid_x = (hip[0] + shoulder[0]) // 2
+        torso_mid_y = (hip[1] + shoulder[1]) // 2
 
-            cv2.rectangle(
-                annotated,
-                (torso_text_x - 5, torso_text_y - torso_text_size[1] - 5),
-                (torso_text_x + torso_text_size[0] + 5, torso_text_y + 5),
-                text_bg_color,
-                -1,
-            )
-            cv2.putText(annotated, torso_text, (torso_text_x, torso_text_y), font, font_scale, text_color, thickness)
-            
-            # Debug text below (smaller font) - shows rotation and dx/dy
-            debug_text = f"comp_rot={compensation_rot}° frame_rot={frame_rot}° dx={dx:.3f} dy={dy:.3f}"
-            debug_text_size = cv2.getTextSize(debug_text, font, font_scale * 0.7, 1)[0]
-            debug_text_x = torso_mid_x - debug_text_size[0] // 2
-            debug_text_y = torso_mid_y + 15
-            cv2.putText(annotated, debug_text, (debug_text_x, debug_text_y), font, font_scale * 0.7, text_color, 1)
+        torso_text = f"Torso (to horizontal): {torso_angle_deg:.1f}\u00b0"
+        torso_text_size = cv2.getTextSize(torso_text, font, font_scale, thickness)[0]
+        torso_text_x = torso_mid_x - torso_text_size[0] // 2
+        torso_text_y = torso_mid_y - 20
+
+        cv2.rectangle(
+            annotated,
+            (torso_text_x - 5, torso_text_y - torso_text_size[1] - 5),
+            (torso_text_x + torso_text_size[0] + 5, torso_text_y + 5),
+            text_bg_color,
+            -1,
+        )
+        cv2.putText(annotated, torso_text, (torso_text_x, torso_text_y), font, font_scale, text_color, thickness)
 
     # Elbow angle label (near elbow joint)
     if "elbow" in landmarks_px and "wrist" in landmarks_px and elbow_angle_deg is not None:
