@@ -1516,15 +1516,19 @@ def generate_annotated_video(
     if not cap.isOpened():
         raise ValueError(f"Could not open video: {input_video_path}")
 
-    # Get video properties
     fps = int(cap.get(cv2.CAP_PROP_FPS))
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    # Initialize video writer
+    # For portrait videos, the output will be landscape after normalization
+    if height > width:
+        out_width, out_height = height, width
+    else:
+        out_width, out_height = width, height
+
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
+    out = cv2.VideoWriter(output_video_path, fourcc, fps, (out_width, out_height))
 
     # Initialize MediaPipe pose
     mp_pose = mp.solutions.pose
@@ -1547,13 +1551,15 @@ def generate_annotated_video(
             if not ret:
                 break
 
-            # Process every Nth frame
             if frame_idx % sample_every_n_frames == 0:
-                frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+                # Normalize orientation (portrait → landscape) the same way
+                # the main analysis pipeline does, so torso angle compensation
+                # uses the correct frame_rotation_deg.
+                frame_bgr_normalized, _ = _normalize_frame_orientation(frame_bgr.copy())
+                frame_rgb = cv2.cvtColor(frame_bgr_normalized, cv2.COLOR_BGR2RGB)
                 results = pose.process(frame_rgb)
 
                 if results.pose_landmarks:
-                    # Analyze pose and get angles/landmarks
                     pose_result = analyze_pose_from_frame(frame_rgb)
                     if pose_result.get("pose_detected"):
                         knee_angle = pose_result["knee_angle_deg"]
@@ -1568,7 +1574,6 @@ def generate_annotated_video(
                         if foot_angle is not None:
                             foot_angles.append(foot_angle)
 
-                        # Draw overlay on frame
                         annotated_frame = draw_pose_overlay(
                             frame_rgb,
                             landmarks_px,
@@ -1578,18 +1583,16 @@ def generate_annotated_video(
                             torso_angle_deg=torso_angle,
                             elbow_angle_deg=elbow_angle,
                         )
-                        # Convert RGB back to BGR for video writer
                         annotated_frame_bgr = cv2.cvtColor(annotated_frame, cv2.COLOR_RGB2BGR)
                         out.write(annotated_frame_bgr)
                     else:
-                        # No pose detected, write original frame
-                        out.write(frame_bgr)
+                        out.write(frame_bgr_normalized)
                 else:
-                    # No pose detected, write original frame
-                    out.write(frame_bgr)
+                    out.write(frame_bgr_normalized)
             else:
-                # Skip frame, write original
-                out.write(frame_bgr)
+                # For non-processed frames, still normalize orientation
+                frame_bgr_normalized, _ = _normalize_frame_orientation(frame_bgr.copy())
+                out.write(frame_bgr_normalized)
 
             frame_idx += 1
 
