@@ -1,4 +1,5 @@
 import math
+from statistics import median
 from typing import Dict, List, Optional, Tuple
 
 import cv2
@@ -128,14 +129,10 @@ def compute_torso_to_horizontal_deg(
 
     Algorithm
     ---------
-    1. Build the hip→shoulder vector in the (possibly rotated) image frame.
-    2. If the frame was rotated by ``_normalize_frame_orientation`` (e.g.
-       portrait 90° CW), un-rotate the vector so it is back in the
-       original camera orientation where +x = real-world horizontal.
-       This is a deterministic coordinate transform using a **known**
-       rotation angle — not a heuristic.
-    3. Compute ``angle = abs(atan2(dy, dx))`` in image coordinates (y-down)
-       and take the acute angle to horizontal: ``min(angle, 180 - angle)``.
+    1. Build the hip→shoulder vector in the normalized analysis frame.
+    2. Compute the angle to the vertical axis in image coordinates.
+    3. Convert to torso-to-horizontal for display/fit comparison:
+       ``torso_to_horizontal = 90 - torso_to_vertical``.
     4. Validate that the shoulder is above the hip; flag unreliable if not.
 
     Parameters
@@ -148,23 +145,19 @@ def compute_torso_to_horizontal_deg(
     dx = shoulder[0] - hip[0]
     dy = shoulder[1] - hip[1]
 
-    # Un-rotate the torso vector when the frame was rotated for normalisation.
-    # The landmarks are in the rotated frame's coordinate space; this puts them
-    # back in the original camera space where x = real-world horizontal.
-    if frame_rotation_deg != 0:
-        rad = math.radians(-frame_rotation_deg)
-        cos_r, sin_r = math.cos(rad), math.sin(rad)
-        dx, dy = cos_r * dx - sin_r * dy, sin_r * dx + cos_r * dy
+    # Frame orientation is normalized before this function is called.
+    # Keep computation in the normalized frame to avoid convention drift
+    # between UI sections and target comparisons.
 
     length = math.sqrt(dx * dx + dy * dy)
     if length < 1e-6:
         return None, {"valid": False, "reason": "zero_length_vector"}
 
-    # Angle to horizontal: abs(atan2(dy, dx)) gives the angle of the vector
-    # from the +x axis in image coordinates (y-down).  Taking the acute angle
-    # to the nearest horizontal axis (0° or 180°) gives the torso tilt.
-    raw_angle_deg = abs(math.degrees(math.atan2(dy, dx)))
-    angle_to_horizontal = min(raw_angle_deg, 180.0 - raw_angle_deg)
+    # Compute angle to vertical first, then convert to horizontal convention.
+    # This guarantees torso display matches "0° = horizontal, 90° = vertical".
+    angle_to_vertical = abs(math.degrees(math.atan2(dx, -dy)))
+    angle_to_vertical = max(0.0, min(90.0, angle_to_vertical))
+    angle_to_horizontal = 90.0 - angle_to_vertical
     angle_to_horizontal = max(0.0, min(90.0, angle_to_horizontal))
 
     # After un-rotation, shoulder above hip in the original image ↔ dy < 0.
@@ -175,7 +168,8 @@ def compute_torso_to_horizontal_deg(
         "valid": True,
         "reliable": reliable,
         "shoulder_above_hip": shoulder_above_hip,
-        "raw_angle_deg": round(raw_angle_deg, 2),
+        "angle_to_vertical_deg": round(angle_to_vertical, 2),
+        "angle_to_horizontal_deg": round(angle_to_horizontal, 2),
         "dx": round(dx, 4),
         "dy": round(dy, 4),
         "frame_rotation_deg": frame_rotation_deg,
@@ -459,7 +453,10 @@ def _rotate_point_norm(p: Tuple[float, float], rot_deg: int) -> Tuple[float, flo
     return (x, y)
 
 
-def analyze_pose_from_frame(frame_rgb: np.ndarray) -> Dict[str, object]:
+def analyze_pose_from_frame(
+    frame_rgb: np.ndarray,
+    locked_side: Optional[str] = None,
+) -> Dict[str, object]:
     """
     Runs pose estimation on a single RGB frame and returns computed angles
     along with pixel coordinates of landmarks.
@@ -485,6 +482,8 @@ def analyze_pose_from_frame(frame_rgb: np.ndarray) -> Dict[str, object]:
     # 1. Select the best body side for this frame
     # ------------------------------------------------------------------
     analysis_side, side_scores = select_analysis_side(landmarks)
+    if locked_side in ("left", "right"):
+        analysis_side = locked_side
     side_enums = SIDE_LANDMARK_ENUMS[analysis_side]
 
     # ------------------------------------------------------------------
@@ -553,18 +552,21 @@ def analyze_pose_from_frame(frame_rgb: np.ndarray) -> Dict[str, object]:
     # 5. Compute angles — all on the chosen side, no rotation hacks
     # ------------------------------------------------------------------
 
-    # Knee: included angle at knee (hip-knee-ankle).  Rotation-invariant.
-    knee_angle = _compute_angle_deg(hip_norm, knee_norm, ankle_norm)
+    # Raw geometric angles from dot-product formula.
+    knee_internal_raw = _compute_angle_deg(hip_norm, knee_norm, ankle_norm)
+    hip_internal_raw = _compute_angle_deg(shoulder_norm, hip_norm, knee_norm)
+    elbow_internal_raw = _compute_angle_deg(shoulder_norm, elbow_norm, wrist_norm)
 
-    # Hip: included angle at hip (shoulder-hip-knee).  Rotation-invariant.
-    # This is the standard bike-fit "closed hip angle".
-    hip_angle = _compute_angle_deg(shoulder_norm, hip_norm, knee_norm)
-
-    # Elbow: included angle at elbow (shoulder-elbow-wrist).
-    elbow_angle = _compute_angle_deg(shoulder_norm, elbow_norm, wrist_norm)
-
-    if math.isnan(knee_angle) or math.isnan(hip_angle) or math.isnan(elbow_angle):
+    if math.isnan(knee_internal_raw) or math.isnan(hip_internal_raw) or math.isnan(elbow_internal_raw):
         return {"pose_detected": False}
+
+    # Display angles (standardized conventions used by fit windows/recommendations).
+    # Knee extension is represented with the larger included angle to match fitting
+    # ranges in this project (e.g., ~140-150 at bottom stroke).
+    knee_angle = max(knee_internal_raw, 180.0 - knee_internal_raw)
+    # Hip "closed" angle is represented as the smaller included angle.
+    hip_angle = min(hip_internal_raw, 180.0 - hip_internal_raw)
+    elbow_angle = elbow_internal_raw
 
     # Foot: optional, with EMA smoothing
     foot_angle: Optional[float] = None
@@ -644,6 +646,20 @@ def analyze_pose_from_frame(frame_rgb: np.ndarray) -> Dict[str, object]:
         "elbow_angle_deg": round(elbow_angle, 2),
         "foot_angle_deg": round(foot_angle, 2) if foot_angle is not None else None,
         "torso_angle_deg": round(torso_angle, 2) if torso_angle is not None else None,
+        "raw_angles_deg": {
+            "knee_internal_raw_deg": round(knee_internal_raw, 2),
+            "hip_internal_raw_deg": round(hip_internal_raw, 2),
+            "elbow_internal_raw_deg": round(elbow_internal_raw, 2),
+            "foot_internal_raw_deg": round(foot_angle_raw, 2) if foot_norm is not None and 'foot_angle_raw' in locals() and not math.isnan(foot_angle_raw) else None,
+            "torso_raw_deg": round(torso_angle_raw, 2) if torso_angle_raw is not None else None,
+        },
+        "display_convention": {
+            "knee_angle_deg": "max(internal, 180-internal)",
+            "hip_angle_deg": "min(internal, 180-internal)",
+            "foot_angle_deg": "internal at ankle",
+            "elbow_angle_deg": "internal at elbow",
+            "torso_angle_deg": "to horizontal",
+        },
         "torso_debug": _smoothing_state.get("torso_debug"),
         "landmarks_px": {
             "shoulder": shoulder_px,
@@ -652,6 +668,15 @@ def analyze_pose_from_frame(frame_rgb: np.ndarray) -> Dict[str, object]:
             "ankle": ankle_px,
             "elbow": elbow_px,
             "wrist": wrist_px,
+        },
+        "landmarks_norm": {
+            "shoulder": shoulder_norm,
+            "hip": hip_norm,
+            "knee": knee_norm,
+            "ankle": ankle_norm,
+            "elbow": elbow_norm,
+            "wrist": wrist_norm,
+            "foot": foot_norm,
         },
         "landmark_visibility": _landmark_visibility,
         "angle_reliability": {
@@ -836,9 +861,9 @@ def generate_bikefit_recommendations(
     if bike_config is None:
         # Fallback to road defaults if config not provided
         bike_config = {
-            "knee": {"optimal": (138.0, 145.0), "neutral": (135.0, 148.0)},
-            "hip": {"optimal": (100.0, 115.0), "neutral": (95.0, 120.0)},
-            "foot": {"neutral": (85.0, 95.0), "ok": (82.0, 98.0)},
+            "knee": {"optimal": (140.0, 150.0), "neutral": (138.0, 152.0)},
+            "hip": {"optimal": (50.0, 60.0), "neutral": (45.0, 65.0)},
+            "foot": {"neutral": (90.0, 105.0), "ok": (85.0, 110.0)},
         }
 
     knee = angles.get("knee_angle_deg")
@@ -900,10 +925,17 @@ def generate_bikefit_recommendations(
                 f"Consider small adjustments to bar height or saddle position."
             )
         elif opt_max < hip <= neut_max:
-            hip_comment = (
-                f"Hip angle is acceptable but could be refined. Measured: {fmt(hip)}. "
-                f"Consider small adjustments to bar height or saddle position."
-            )
+            if bike_type == "tt":
+                hip_comment = (
+                    f"Hip angle is slightly open for an aggressive TT setup, but still practical. "
+                    f"This may trade a little aero efficiency for better comfort/power sustainability. "
+                    f"Measured: {fmt(hip)}"
+                )
+            else:
+                hip_comment = (
+                    f"Hip angle is acceptable but could be refined. Measured: {fmt(hip)}. "
+                    f"Consider small adjustments to bar height or saddle position."
+                )
         elif hip < neut_min:
             if bike_type == "tt":
                 hip_comment = (
@@ -963,45 +995,45 @@ def generate_bikefit_recommendations(
         torso_comment = "Torso angle not measured."
     else:
         if bike_type == "tt":
-            if torso < 10:
+            if torso < 0:
                 torso_comment = (
-                    f"Torso extremely low (<10°). Very aero but likely unsustainable "
-                    f"and may close hip angle too much. Measured: {fmt(torso)}"
+                    f"Torso below 0° is not physically expected in this convention; recheck camera alignment. "
+                    f"Measured: {fmt(torso)}"
                 )
-            elif 10 <= torso <= 20:
+            elif 0 <= torso <= 10:
                 torso_comment = (
-                    f"Aggressive aero torso angle (10–20°). Good for short TTs if "
-                    f"you can sustain power and comfort. Measured: {fmt(torso)}"
+                    f"Very aggressive aero torso angle (0–10°), consistent with TT positions when sustainable. "
+                    f"Measured: {fmt(torso)}"
                 )
-            elif 20 < torso <= 30:
+            elif 10 < torso <= 20:
                 torso_comment = (
-                    f"Balanced aero/comfort torso angle (20–30°). Typical for long-course "
-                    f"triathlon or sustainable TT positions. Measured: {fmt(torso)}"
+                    f"Torso moderately low (10–20°). Aero-focused but less extreme than typical TT race posture. "
+                    f"Measured: {fmt(torso)}"
                 )
-            else:  # torso > 30
+            else:  # torso > 20
                 torso_comment = (
-                    f"Torso relatively upright (>30°). Comfortable but giving up aero "
+                    f"Torso relatively upright (>20°) for TT; comfortable but giving up aero "
                     f"benefits; consider lowering front end or extending reach. Measured: {fmt(torso)}"
                 )
         elif bike_type == "road":
             if torso < 30:
                 torso_comment = (
-                    f"Torso very low (<30°). Very aggressive position; may be hard to sustain. "
+                    f"Torso very low (<30°). Aggressive position; may be hard to sustain for long rides. "
                     f"Consider raising bars slightly if comfort is an issue. Measured: {fmt(torso)}"
                 )
-            elif 30 <= torso <= 40:
+            elif 30 <= torso < 35:
                 torso_comment = (
-                    f"Performance-oriented torso angle (30–40°). Good balance of aero and power. "
+                    f"Performance-leaning torso angle (30–35°). Aerodynamic but may increase load on back/neck. "
                     f"Measured: {fmt(torso)}"
                 )
-            elif 40 < torso <= 50:
+            elif 35 <= torso <= 45:
                 torso_comment = (
-                    f"Endurance/comfort torso angle (40–50°). Good for long rides and sustainable power. "
+                    f"Road endurance torso angle (35–45°). Typically a strong balance for comfort and sustainable power. "
                     f"Measured: {fmt(torso)}"
                 )
-            else:  # torso > 50
+            else:  # torso > 45
                 torso_comment = (
-                    f"Torso relatively upright (>50°). Comfortable but less aero; consider lowering bars "
+                    f"Torso relatively upright (>45°). Comfortable but less aero; consider lowering bars "
                     f"slightly if you want more performance. Measured: {fmt(torso)}"
                 )
         elif bike_type == "gravel":
@@ -1020,21 +1052,37 @@ def generate_bikefit_recommendations(
                     f"Torso quite upright (>55°). Very comfortable but may limit control on descents; "
                     f"consider slight bar drop. Measured: {fmt(torso)}"
                 )
-        else:  # mtb
+        elif bike_type == "mtb":
             if torso < 45:
                 torso_comment = (
                     f"Torso quite low (<45°). May be too aggressive for technical MTB; consider raising bars. "
                     f"Measured: {fmt(torso)}"
                 )
-            elif 45 <= torso <= 60:
+            elif 45 <= torso <= 65:
                 torso_comment = (
-                    f"Technical control & shock absorption torso angle (45–60°). Good for variable terrain. "
+                    f"Technical control & shock absorption torso angle (45–65°). Good for variable terrain. "
                     f"Measured: {fmt(torso)}"
                 )
-            else:  # torso > 60
+            else:  # torso > 65
                 torso_comment = (
-                    f"Torso very upright (>60°). Very comfortable but may limit control; "
+                    f"Torso very upright (>65°). Very comfortable but may limit control; "
                     f"consider slight bar adjustment. Measured: {fmt(torso)}"
+                )
+        else:  # spin
+            if torso < 30:
+                torso_comment = (
+                    f"Torso quite low (<30°) for indoor comfort-focused riding; consider raising bars. "
+                    f"Measured: {fmt(torso)}"
+                )
+            elif 30 <= torso <= 50:
+                torso_comment = (
+                    f"Indoor comfort torso angle (30–50°). Good for sustainable spin sessions. "
+                    f"Measured: {fmt(torso)}"
+                )
+            else:
+                torso_comment = (
+                    f"Torso relatively upright (>50°). Comfortable but may reduce front-end loading and control. "
+                    f"Measured: {fmt(torso)}"
                 )
 
     # Elbow logic (bike-type-specific)
@@ -1229,35 +1277,42 @@ def get_target_ranges(bike_type: str, goal: str, mobility: Dict[str, float]) -> 
     Goal sensitivity: Comfort = wider range, Aero-Performance = narrower range.
     Mobility adjusts ranges slightly (soft weighting).
     """
-    # Base ranges by bike type (from BIKE_TYPE_CONFIG)
+    # Base ranges by bike type.
     base_ranges = {
         "tt": {
-            "knee": (138.0, 152.0),
-            "hip": (90.0, 115.0),
-            "foot": (82.0, 98.0),
-            "torso": (10.0, 30.0),
-            "elbow": (90.0, 115.0),
+            "knee": (140.0, 148.0),
+            "hip": (50.0, 62.0),
+            "foot": (85.0, 100.0),
+            "torso": (0.0, 10.0),
+            "elbow": (90.0, 110.0),
         },
         "road": {
-            "knee": (135.0, 148.0),
-            "hip": (95.0, 120.0),
-            "foot": (82.0, 98.0),
-            "torso": (30.0, 50.0),
-            "elbow": (140.0, 165.0),
+            "knee": (140.0, 150.0),
+            "hip": (50.0, 60.0),
+            "foot": (90.0, 105.0),
+            "torso": (30.0, 45.0),
+            "elbow": (150.0, 165.0),
         },
         "gravel": {
-            "knee": (135.0, 148.0),
-            "hip": (100.0, 125.0),
-            "foot": (82.0, 98.0),
+            "knee": (140.0, 150.0),
+            "hip": (55.0, 65.0),
+            "foot": (95.0, 110.0),
             "torso": (40.0, 55.0),
-            "elbow": (145.0, 170.0),
+            "elbow": (140.0, 160.0),
         },
         "mtb": {
-            "knee": (135.0, 148.0),
-            "hip": (105.0, 130.0),
-            "foot": (82.0, 98.0),
-            "torso": (45.0, 60.0),
-            "elbow": (145.0, 170.0),
+            "knee": (140.0, 150.0),
+            "hip": (60.0, 75.0),
+            "foot": (100.0, 115.0),
+            "torso": (45.0, 65.0),
+            "elbow": (120.0, 150.0),
+        },
+        "spin": {
+            "knee": (140.0, 150.0),
+            "hip": (55.0, 65.0),
+            "foot": (90.0, 105.0),
+            "torso": (30.0, 50.0),
+            "elbow": (140.0, 165.0),
         },
     }
 
@@ -1275,7 +1330,7 @@ def get_target_ranges(bike_type: str, goal: str, mobility: Dict[str, float]) -> 
         for key in ranges:
             min_val, max_val = ranges[key]
             width = max_val - min_val
-            if key in ["torso", "hip"]:  # Lower is better for aero
+            if key in ["torso"]:  # Lower torso tends toward aero-oriented posture
                 ranges[key] = (min_val, max_val - width * 0.1)
             else:
                 ranges[key] = (min_val + width * 0.05, max_val - width * 0.05)
@@ -1337,6 +1392,15 @@ def compute_fit_windows(
             "target_min": round(target_min, 1),
             "target_max": round(target_max, 1),
             "status": status,
+            "interpretation": (
+                "Within recommended range."
+                if status == "In Range"
+                else (
+                    "Slightly outside range; often acceptable with comfort/performance trade-off."
+                    if status == "Slightly Off"
+                    else "Clearly outside range; adjustment likely beneficial."
+                )
+            ),
         }
 
     return fit_windows
@@ -1388,6 +1452,98 @@ def compute_stroke_samples(
         "top": extract_angles(top_frame),  # Bottom of stroke (leg extended)
         "mid": extract_angles(mid_frame),
         "bottom": extract_angles(bottom_frame),  # Top of stroke (leg flexed)
+    }
+
+
+def select_clip_analysis_side(
+    pose_results: List[Dict[str, object]],
+    first_n_valid_frames: int = 20,
+) -> str:
+    """Select one side for the whole clip using early valid-frame confidence."""
+    left_scores: List[float] = []
+    right_scores: List[float] = []
+    valid_count = 0
+
+    for result in pose_results:
+        if not result.get("pose_detected"):
+            continue
+        score_map = result.get("angle_reliability", {}).get("side_scores", {})
+        left = score_map.get("left")
+        right = score_map.get("right")
+        if left is None or right is None:
+            continue
+        left_scores.append(float(left))
+        right_scores.append(float(right))
+        valid_count += 1
+        if valid_count >= first_n_valid_frames:
+            break
+
+    if not left_scores or not right_scores:
+        return "left"
+    return "left" if (sum(left_scores) / len(left_scores)) >= (sum(right_scores) / len(right_scores)) else "right"
+
+
+def _detect_local_extrema(
+    values: List[Optional[float]],
+    mode: str,
+    radius: int = 1,
+) -> List[int]:
+    """Detect local minima/maxima indices on sampled trajectories."""
+    indices: List[int] = []
+    for i, v in enumerate(values):
+        if v is None:
+            continue
+        lo = max(0, i - radius)
+        hi = min(len(values), i + radius + 1)
+        neighborhood = [values[j] for j in range(lo, hi) if j != i and values[j] is not None]
+        if not neighborhood:
+            continue
+        if mode == "min" and v <= min(neighborhood):
+            indices.append(i)
+        if mode == "max" and v >= max(neighborhood):
+            indices.append(i)
+    return indices
+
+
+def detect_pedal_events(frame_metrics: List[Dict[str, object]]) -> Dict[str, List[int]]:
+    """Detect top/bottom stroke using knee-angle extrema on sampled frames."""
+    if not frame_metrics:
+        return {"top": [], "bottom": [], "front": []}
+
+    valid_indices = [
+        i for i, m in enumerate(frame_metrics)
+        if m.get("knee_angle_deg") is not None
+    ]
+    if not valid_indices:
+        return {"top": [], "bottom": [], "front": []}
+
+    bottom_i = max(valid_indices, key=lambda i: float(frame_metrics[i]["knee_angle_deg"]))
+    top_i = min(valid_indices, key=lambda i: float(frame_metrics[i]["knee_angle_deg"]))
+    return {"top": [top_i], "bottom": [bottom_i], "front": []}
+
+
+def compute_event_median_metrics(
+    frame_metrics: List[Dict[str, object]],
+    events: Dict[str, List[int]],
+) -> Dict[str, Optional[float]]:
+    """Compute clip-level metrics from event-linked and pooled medians."""
+    top_idx = events.get("top", [])
+    bottom_idx = events.get("bottom", [])
+
+    knee_bottom = [frame_metrics[i].get("knee_angle_deg") for i in bottom_idx if frame_metrics[i].get("knee_angle_deg") is not None]
+    hip_top = [frame_metrics[i].get("hip_angle_deg") for i in top_idx if frame_metrics[i].get("hip_angle_deg") is not None]
+    hip_bottom = [frame_metrics[i].get("hip_angle_deg") for i in bottom_idx if frame_metrics[i].get("hip_angle_deg") is not None]
+    torso_pool = [m.get("torso_angle_deg") for m in frame_metrics if m.get("torso_angle_deg") is not None]
+    foot_pool = [m.get("foot_angle_deg") for m in frame_metrics if m.get("foot_angle_deg") is not None]
+    elbow_pool = [m.get("elbow_angle_deg") for m in frame_metrics if m.get("elbow_angle_deg") is not None]
+
+    return {
+        "knee_angle_deg": round(float(median(knee_bottom)), 2) if knee_bottom else None,
+        "hip_closed_deg": round(float(median(hip_top)), 2) if hip_top else None,
+        "hip_open_deg": round(float(median(hip_bottom)), 2) if hip_bottom else None,
+        "torso_angle_deg": round(float(median(torso_pool)), 2) if torso_pool else None,
+        "foot_angle_deg": round(float(median(foot_pool)), 2) if foot_pool else None,
+        "elbow_angle_deg": round(float(median(elbow_pool)), 2) if elbow_pool else None,
     }
 
 
