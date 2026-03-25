@@ -19,12 +19,15 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from angles import (
+    compute_signed_segment_angle_deg,
+    compute_torso_to_horizontal_deg,
+)
+
 from pose_analysis import (
     MIN_LANDMARK_CONFIDENCE,
     SIDE_LANDMARK_ENUMS,
     _compute_angle_deg,
-    compute_signed_segment_angle_deg,
-    compute_torso_to_horizontal_deg,
     get_metric_reliability,
     select_analysis_side,
 )

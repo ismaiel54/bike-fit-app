@@ -6,6 +6,8 @@ import cv2
 import mediapipe as mp
 import numpy as np
 
+from angles import compute_signed_segment_angle_deg, compute_torso_to_horizontal_deg
+
 
 mp_pose = mp.solutions.pose
 
@@ -92,89 +94,6 @@ def _get_landmark_with_confidence(
     """Return ``(x, y, confidence)`` in normalised image coordinates."""
     lm = landmarks.landmark[landmark_enum]
     return (lm.x, lm.y, lm.visibility)
-
-
-# ---------------------------------------------------------------------------
-# Geometry helpers — explicit names, explicit coordinate handling
-# ---------------------------------------------------------------------------
-
-def compute_signed_segment_angle_deg(
-    p_from: Tuple[float, float],
-    p_to: Tuple[float, float],
-) -> float:
-    """Signed angle of the directed segment *p_from→p_to* from the +x axis.
-
-    Converts from **image** coordinates (y increases downward) to standard
-    maths coordinates (y increases upward) by negating dy.
-
-    Returns:
-        Angle in degrees in **[-180, 180]**, counter-clockwise positive.
-    """
-    dx = p_to[0] - p_from[0]
-    dy = p_to[1] - p_from[1]
-    return math.degrees(math.atan2(-dy, dx))
-
-
-def compute_torso_to_horizontal_deg(
-    hip: Tuple[float, float],
-    shoulder: Tuple[float, float],
-    frame_rotation_deg: int = 0,
-) -> Tuple[Optional[float], Dict[str, object]]:
-    """Torso angle relative to **real-world horizontal** for side-on bike fit.
-
-    Definition
-    ----------
-    0° = torso perfectly horizontal (maximally aero).
-    90° = torso perfectly vertical (standing upright).
-
-    Algorithm
-    ---------
-    1. Build the hip→shoulder vector in the normalized analysis frame.
-    2. Compute the angle to the vertical axis in image coordinates.
-    3. Convert to torso-to-horizontal for display/fit comparison:
-       ``torso_to_horizontal = 90 - torso_to_vertical``.
-    4. Validate that the shoulder is above the hip; flag unreliable if not.
-
-    Parameters
-    ----------
-    frame_rotation_deg :
-        Degrees the frame was rotated **clockwise** before MediaPipe
-        processed it (from ``_smoothing_state["display_rotation_deg"]``).
-        Typical values: 0 (landscape, no rotation) or 90 (portrait → landscape).
-    """
-    dx = shoulder[0] - hip[0]
-    dy = shoulder[1] - hip[1]
-
-    # Frame orientation is normalized before this function is called.
-    # Keep computation in the normalized frame to avoid convention drift
-    # between UI sections and target comparisons.
-
-    length = math.sqrt(dx * dx + dy * dy)
-    if length < 1e-6:
-        return None, {"valid": False, "reason": "zero_length_vector"}
-
-    # Compute angle to vertical first, then convert to horizontal convention.
-    # This guarantees torso display matches "0° = horizontal, 90° = vertical".
-    angle_to_vertical = abs(math.degrees(math.atan2(dx, -dy)))
-    angle_to_vertical = max(0.0, min(90.0, angle_to_vertical))
-    angle_to_horizontal = 90.0 - angle_to_vertical
-    angle_to_horizontal = max(0.0, min(90.0, angle_to_horizontal))
-
-    # After un-rotation, shoulder above hip in the original image ↔ dy < 0.
-    shoulder_above_hip = dy < 0
-    reliable = shoulder_above_hip
-
-    diagnostics: Dict[str, object] = {
-        "valid": True,
-        "reliable": reliable,
-        "shoulder_above_hip": shoulder_above_hip,
-        "angle_to_vertical_deg": round(angle_to_vertical, 2),
-        "angle_to_horizontal_deg": round(angle_to_horizontal, 2),
-        "dx": round(dx, 4),
-        "dy": round(dy, 4),
-        "frame_rotation_deg": frame_rotation_deg,
-    }
-    return angle_to_horizontal, diagnostics
 
 
 def get_metric_reliability(
@@ -1000,42 +919,74 @@ def generate_bikefit_recommendations(
                     f"Torso below 0° is not physically expected in this convention; recheck camera alignment. "
                     f"Measured: {fmt(torso)}"
                 )
-            elif 0 <= torso <= 10:
+            elif 0 <= torso < 5:
                 torso_comment = (
-                    f"Very aggressive aero torso angle (0–10°), consistent with TT positions when sustainable. "
+                    f"Extremely low torso angle (0–5°), very aggressive for TT/aero. Ensure you can sustain this comfortably. "
                     f"Measured: {fmt(torso)}"
                 )
-            elif 10 < torso <= 20:
+            elif 5 <= torso <= 15:
                 torso_comment = (
-                    f"Torso moderately low (10–20°). Aero-focused but less extreme than typical TT race posture. "
+                    f"Strong TT/aero torso angle (5–15°) — typically a good aero range if sustainable. "
                     f"Measured: {fmt(torso)}"
                 )
             else:  # torso > 20
                 torso_comment = (
-                    f"Torso relatively upright (>20°) for TT; comfortable but giving up aero "
+                    f"Torso relatively upright (>15°) for TT; comfortable but giving up aero "
                     f"benefits; consider lowering front end or extending reach. Measured: {fmt(torso)}"
                 )
         elif bike_type == "road":
-            if torso < 30:
-                torso_comment = (
-                    f"Torso very low (<30°). Aggressive position; may be hard to sustain for long rides. "
-                    f"Consider raising bars slightly if comfort is an issue. Measured: {fmt(torso)}"
-                )
-            elif 30 <= torso < 35:
-                torso_comment = (
-                    f"Performance-leaning torso angle (30–35°). Aerodynamic but may increase load on back/neck. "
-                    f"Measured: {fmt(torso)}"
-                )
-            elif 35 <= torso <= 45:
-                torso_comment = (
-                    f"Road endurance torso angle (35–45°). Typically a strong balance for comfort and sustainable power. "
-                    f"Measured: {fmt(torso)}"
-                )
-            else:  # torso > 45
-                torso_comment = (
-                    f"Torso relatively upright (>45°). Comfortable but less aero; consider lowering bars "
-                    f"slightly if you want more performance. Measured: {fmt(torso)}"
-                )
+            # Road targets depend on goal:
+            # - Aero-Performance: 25–35°
+            # - Balanced/performance: 30–45°
+            # - Comfort/endurance: 40–55°
+            if goal == "Aero-Performance":
+                if torso < 25:
+                    torso_comment = (
+                        f"Torso is very low (<25°) — quite aggressive even for aero-focused road riding. "
+                        f"Measured: {fmt(torso)}"
+                    )
+                elif 25 <= torso <= 35:
+                    torso_comment = (
+                        f"Aero-focused road torso angle (25–35°). Strong aerodynamic posture if sustainable. "
+                        f"Measured: {fmt(torso)}"
+                    )
+                else:
+                    torso_comment = (
+                        f"Torso relatively upright (>35°) for an aero-focused goal; consider lowering the front end "
+                        f"or increasing reach slightly if comfort allows. Measured: {fmt(torso)}"
+                    )
+            elif goal == "Comfort":
+                if torso < 40:
+                    torso_comment = (
+                        f"Torso is relatively low (<40°) for a comfort/endurance goal; if you have back/neck/hand load, "
+                        f"consider raising the bars slightly. Measured: {fmt(torso)}"
+                    )
+                elif 40 <= torso <= 55:
+                    torso_comment = (
+                        f"Endurance/relaxed road torso angle (40–55°). Typically a strong comfort-sustainability range. "
+                        f"Measured: {fmt(torso)}"
+                    )
+                else:
+                    torso_comment = (
+                        f"Torso quite upright (>55°). Very comfortable but less aerodynamic; if you want a bit more performance, "
+                        f"consider a small bar drop. Measured: {fmt(torso)}"
+                    )
+            else:  # Balanced
+                if torso < 30:
+                    torso_comment = (
+                        f"Torso very low (<30°). Aggressive road posture; may be hard to sustain for long rides. "
+                        f"Measured: {fmt(torso)}"
+                    )
+                elif 30 <= torso <= 45:
+                    torso_comment = (
+                        f"Performance road torso angle (30–45°). Strong balance for speed and sustainability. "
+                        f"Measured: {fmt(torso)}"
+                    )
+                else:
+                    torso_comment = (
+                        f"Torso relatively upright (>45°). Comfortable but less aero; consider a small bar drop if you want "
+                        f"more performance. Measured: {fmt(torso)}"
+                    )
         elif bike_type == "gravel":
             if torso < 40:
                 torso_comment = (
@@ -1283,13 +1234,16 @@ def get_target_ranges(bike_type: str, goal: str, mobility: Dict[str, float]) -> 
             "knee": (140.0, 148.0),
             "hip": (50.0, 62.0),
             "foot": (85.0, 100.0),
-            "torso": (0.0, 10.0),
+            # TT/aero: torso angle to horizontal, typically ~5–15°.
+            "torso": (5.0, 15.0),
             "elbow": (90.0, 110.0),
         },
         "road": {
             "knee": (140.0, 150.0),
             "hip": (50.0, 60.0),
             "foot": (90.0, 105.0),
+            # Road torso targets depend heavily on rider goal.
+            # Balanced/performance default is 30–45° (to horizontal).
             "torso": (30.0, 45.0),
             "elbow": (150.0, 165.0),
         },
@@ -1317,6 +1271,18 @@ def get_target_ranges(bike_type: str, goal: str, mobility: Dict[str, float]) -> 
     }
 
     ranges = base_ranges.get(bike_type, base_ranges["road"]).copy()
+
+    # Goal-specific torso targets (avoid applying TT-like targets to road).
+    if bike_type == "road":
+        if goal == "Aero-Performance":
+            ranges["torso"] = (25.0, 35.0)
+        elif goal == "Comfort":
+            ranges["torso"] = (40.0, 55.0)
+        else:  # Balanced
+            ranges["torso"] = (30.0, 45.0)
+    elif bike_type == "tt":
+        # Keep TT torso in 5–15° regardless of goal; comfort/aero is mostly elsewhere.
+        ranges["torso"] = (5.0, 15.0)
 
     # Apply goal sensitivity
     if goal == "Comfort":
